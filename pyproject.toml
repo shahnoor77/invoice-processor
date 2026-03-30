@@ -1,0 +1,28 @@
+[project]
+name = "invoice_processing_automation_system"
+version = "0.1.0"
+description = "invoice_processing_automation_system using crewAI"
+authors = [{ name = "Your Name", email = "you@example.com" }]
+requires-python = ">=3.10,<3.14"
+dependencies = [
+    "crewai[litellm,tools]==1.11.0",
+    "streamlit>=1.38.0",
+]
+
+[project.scripts]
+invoice_processing_automation_system = "invoice_processing_automation_system.main:run"
+run_crew = "invoice_processing_automation_system.main:run"
+train = "invoice_processing_automation_system.main:train"
+replay = "invoice_processing_automation_system.main:replay"
+test = "invoice_processing_automation_system.main:test"
+run_with_trigger = "invoice_processing_automation_system.main:run_with_trigger"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.crewai]
+type = "crew"
+
+[tool.uv]
+override-dependencies = ["litellm<=1.82.6"]
