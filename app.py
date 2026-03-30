@@ -5,13 +5,20 @@ import sys
 import io
 import os
 import tempfile
+
+# Add src to path so Streamlit Cloud can find the package
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "src"))
+
 from dotenv import load_dotenv
 
 load_dotenv()
 
 # Support Streamlit Cloud secrets
-if "OPENAI_API_KEY" in st.secrets:
-    os.environ["OPENAI_API_KEY"] = st.secrets["OPENAI_API_KEY"]
+try:
+    if "OPENAI_API_KEY" in st.secrets:
+        os.environ["OPENAI_API_KEY"] = st.secrets["OPENAI_API_KEY"]
+except Exception:
+    pass  # No secrets configured, rely on .env
 
 from invoice_processing_automation_system.crew import InvoiceProcessingAutomationSystemCrew
 
