@@ -1,4 +1,84 @@
-User name is John Doe.
-User is an AI Engineer.
-User is interested in AI Agents.
-User is based in San Francisco, California.
+## Invoice Processing Rules
+
+ACCURACY RULES (strictly follow these):
+- Never fabricate, guess, or infer any invoice field value
+- If a value is not clearly present in the extracted text, set it to null
+- Dates must always be in YYYY-MM-DD format
+- Amounts must always be numeric (no currency symbols in numeric fields)
+- Currency goes in the "currency" field as ISO code (USD, EUR, GBP, PKR, etc.)
+- ALWAYS separate sender and receiver — never merge them into one object
+  - sender = who issued/sent the invoice (vendor, supplier, from address)
+  - receiver = who receives/pays the invoice (client, bill-to, ship-to address)
+
+## Example of correct extraction
+
+OCR text:
+  FROM: Acme Corp, 123 Supplier St, New York, USA | Tel: +1-555-0100 | acme@acme.com
+  TO: Beta Ltd, 456 Client Ave, London, UK | Tel: +44-20-0200
+
+  INVOICE #INV-2024-0042
+  Date: 15 March 2024  |  Due: 15 April 2024
+  PO: PO-9876  |  Terms: Net 30
+
+  Item: Web Design Services  Qty: 1  Unit: service  Price: $1,500.00  Total: $1,500.00
+  Item: Hosting Setup        Qty: 2  Unit: month    Price: $100.00   Total: $200.00
+
+  Subtotal: $1,700.00
+  Discount: $0.00
+  Tax (10%): $170.00
+  Shipping: $0.00
+  TOTAL: $1,870.00
+  Amount Paid: $0.00
+  Amount Due: $1,870.00
+
+  Bank: IBAN XX00 0000 0000 | SWIFT: ACMEUSXX
+  Notes: Please pay within 30 days.
+
+Correct JSON output:
+{
+  "sender": {
+    "name": "Acme Corp",
+    "address": "123 Supplier St",
+    "city": "New York",
+    "country": "USA",
+    "phone": "+1-555-0100",
+    "email": "acme@acme.com",
+    "tax_id": null,
+    "website": null
+  },
+  "receiver": {
+    "name": "Beta Ltd",
+    "address": "456 Client Ave",
+    "city": "London",
+    "country": "UK",
+    "phone": "+44-20-0200",
+    "email": null,
+    "tax_id": null
+  },
+  "invoice_number": "INV-2024-0042",
+  "invoice_date": "2024-03-15",
+  "due_date": "2024-04-15",
+  "purchase_order": "PO-9876",
+  "payment_terms": "Net 30",
+  "line_items": [
+    {"description": "Web Design Services", "quantity": 1, "unit": "service", "unit_price": 1500.00, "discount": 0.00, "total": 1500.00},
+    {"description": "Hosting Setup", "quantity": 2, "unit": "month", "unit_price": 100.00, "discount": 0.00, "total": 200.00}
+  ],
+  "subtotal": 1700.00,
+  "discount_total": 0.00,
+  "tax_rate": 10.00,
+  "tax_amount": 170.00,
+  "shipping": 0.00,
+  "total_amount": 1870.00,
+  "amount_paid": 0.00,
+  "amount_due": 1870.00,
+  "currency": "USD",
+  "notes": "Please pay within 30 days.",
+  "bank_details": "IBAN XX00 0000 0000 | SWIFT: ACMEUSXX",
+  "confidence": "HIGH"
+}
+
+## Handling low quality / blurry invoices
+If OCR confidence is LOW, still extract what you can but mark confidence as "LOW":
+- Set fields you cannot read clearly to null
+- Never guess amounts or names

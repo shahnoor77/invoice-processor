@@ -2,98 +2,99 @@
 invoice_file_detection_and_intake:
   description: >
     Invoice files have been uploaded at: {intake_source}
-    
-    CRITICAL: You MUST use the pdf_text_extractor tool with the exact file path(s) listed above
-    to extract the actual text content from the PDF files. Do NOT make up or guess any invoice data.
-    For image files (PNG, JPG), use the image_text_extractor tool instead.
-    
+
+    CRITICAL: You MUST use the pdf_text_extractor tool for PDF files and image_text_extractor
+    for image files (PNG, JPG). Use the EXACT file paths listed above.
+    Do NOT make up or guess any invoice data.
+
     Steps:
-    1. Identify each file path from the intake source above
-    2. For each PDF file, call the pdf_text_extractor tool with the file_path parameter
-    3. For each image file, call the image_text_extractor tool with the file_path parameter
-    4. Include ALL extracted text in your output
-    5. Create an intake log with file metadata
+    1. Identify each file path
+    2. Call the correct tool for each file
+    3. Include ALL extracted text in your output verbatim
   expected_output: >
-    A structured intake report containing:
-    1. File metadata (path, format, size)
-    2. The COMPLETE extracted text content from each file (this is critical - include every line)
-    3. Format validation results
-    4. Any preprocessing notes
+    The COMPLETE raw extracted text from each file, exactly as returned by the tool.
+    Do not summarize, paraphrase, or modify the extracted text in any way.
+    Include every line, number, and character exactly as extracted.
   agent: document_intake_specialist
-ocr_text_extraction:
-  description: >
-    Review the text extracted in the previous step from invoice file(s).
-    If the text extraction was incomplete or had issues, use the pdf_text_extractor or 
-    image_text_extractor tools with the file paths from the intake report to re-extract.
-    
-    CRITICAL: Work ONLY with the actual text extracted from the uploaded files.
-    Do NOT invent or hallucinate any data. Every piece of data must come from the actual file content.
-    
-    Clean and structure the extracted text while preserving the original layout and all data values.
-  expected_output: >
-    The complete, clean, structured text content extracted from the invoice file(s).
-    Include ALL text exactly as it appears in the document - vendor names, addresses, amounts,
-    line items, dates, invoice numbers, etc. Do not omit or fabricate any values.
-  agent: ocr_processing_specialist
-  context:
-  - invoice_file_detection_and_intake
-invoice_layout_analysis:
-  description: >
-    Analyze the ACTUAL extracted text from the previous step to identify and map invoice sections
-    including header information, vendor details, line items table, tax sections, and total amounts.
-    Create a structural blueprint that will guide precise data extraction.
-    CRITICAL: Only reference sections and data that actually exist in the extracted text. Do NOT invent data.
-  expected_output: >
-    A detailed layout map based on the actual extracted text, identifying the location and structure 
-    of key invoice sections found in the document. Include section boundaries, field relationships,
-    and recommendations for data extraction strategy.
-  agent: layout_analysis_expert
-  context:
-  - ocr_text_extraction
+
 structured_data_extraction:
   description: >
-    Extract structured invoice data from the ACTUAL extracted text using the layout analysis as a guide.
-    Pull out vendor information, invoice number, date, line items with quantities and prices, tax amounts,
-    and total values. Convert all extracted data into a standardized JSON format ready for validation.
-    CRITICAL: Every value in the JSON must come from the actual extracted text. Do NOT fabricate any values.
-    If a field cannot be found, mark it as null rather than inventing data.
+    Extract invoice data from the raw text below. Copy values EXACTLY as they appear.
+    Do not round, convert, reformat, or calculate any value.
+
+    RAW INVOICE TEXT (copy values from here only):
+    ---
+    {ocr_text}
+    ---
+
+    STRICT RULES:
+    - Copy every number EXACTLY as written (e.g. "1,250.00" → 1250.00)
+    - sender = party who ISSUED the invoice (FROM / vendor / supplier / letterhead)
+    - receiver = party who RECEIVES the invoice (TO / bill-to / ship-to / client)
+    - Dates must be YYYY-MM-DD format
+    - Numeric fields: numbers only, no currency symbols
+    - If a field is not in the text, set it to null — never calculate or guess
+    - Copy line item description, quantity, unit price, and total EXACTLY as shown
+    - total_amount must match the TOTAL/GRAND TOTAL line exactly
+    - amount_due must match the BALANCE DUE / AMOUNT DUE line exactly
+    - Do NOT perform any arithmetic — only copy what is written
+
+    Output ONLY valid JSON, no explanation, no markdown:
+    {
+      "sender": {"name": null, "address": null, "city": null, "country": null, "phone": null, "email": null, "tax_id": null, "website": null},
+      "receiver": {"name": null, "address": null, "city": null, "country": null, "phone": null, "email": null, "tax_id": null},
+      "invoice_number": null,
+      "invoice_date": null,
+      "due_date": null,
+      "purchase_order": null,
+      "payment_terms": null,
+      "line_items": [{"description": null, "quantity": null, "unit": null, "unit_price": null, "discount": null, "total": null}],
+      "subtotal": null,
+      "discount_total": null,
+      "tax_rate": null,
+      "tax_amount": null,
+      "shipping": null,
+      "total_amount": null,
+      "amount_paid": null,
+      "amount_due": null,
+      "currency": null,
+      "notes": null,
+      "bank_details": null,
+      "confidence": "HIGH"
+    }
   expected_output: >
-    A comprehensive JSON object containing all extracted invoice data with fields: vendor_info,
-    invoice_number, invoice_date, line_items, taxes, subtotal, total_amount, and confidence_scores.
-    ALL values must match what was actually extracted from the document.
+    Valid JSON only. Values copied verbatim from the raw invoice text.
+    No calculated values. No guessed values. Null for anything not found.
   agent: data_extraction_specialist
-  context:
-  - invoice_layout_analysis
+
 invoice_data_validation:
-  description: Perform comprehensive validation of extracted invoice data. Verify
-    mathematical calculations (line items, taxes, totals), validate vendor information
-    against known vendors, check data completeness, and flag any anomalies or discrepancies
-    that require human review.
-  expected_output: A validation report indicating PASS/FAIL status for each validation
-    check, detailed error descriptions for any failures, corrected calculations where
-    applicable, and recommendations for handling any identified issues.
+  description: >
+    Validate the extracted invoice JSON from the previous step.
+    Check: math (line items sum to subtotal, subtotal + tax = total), completeness,
+    and flag any suspicious values.
+    Do NOT modify the extracted values — only report issues.
+  expected_output: >
+    Validation report with PASS/FAIL for each check and list of any issues found.
   agent: data_validation_analyst
   context:
   - structured_data_extraction
+
 erp_system_integration:
-  description: Push validated invoice data to the specified ERP system ({erp_system}).
-    Map data fields appropriately, handle API calls, manage any integration errors,
-    and ensure successful data transfer. Update processing status and maintain audit
-    logs.
-  expected_output: Integration status report confirming successful data push to ERP
-    system, including transaction IDs, any error messages, and audit trail information.
-    Provide ERP record references for tracking.
+  description: >
+    Push validated invoice data to {erp_system}.
+    Report the integration status.
+  expected_output: >
+    Integration status: SUCCESS or FAILED with reason.
   agent: erp_integration_specialist
   context:
   - invoice_data_validation
+
 finance_team_notification:
-  description: Send comprehensive notifications to the finance team via {notification_channel}
-    about the processed invoice. Include processing status, validation results, ERP
-    integration status, and any issues that require attention. Provide actionable
-    information and clear next steps.
-  expected_output: Confirmation of successfully sent notifications including recipient
-    details, message content summary, and delivery status. Include any follow-up actions
-    required and escalation procedures if issues were identified.
+  description: >
+    Notify the finance team via {notification_channel} about the processed invoice.
+    Include invoice number, total, vendor, and processing status.
+  expected_output: >
+    Confirmation that notification was sent with summary of what was communicated.
   agent: finance_notification_coordinator
   context:
   - erp_system_integration

@@ -1,6 +1,24 @@
+# Environment & secrets — never commit these
 .env
+google_credentials.json
+*.json.key
+
+# Python
 __pycache__/
-.DS_Store
-.venv/
 *.pyc
+*.pyo
+.venv/
+*.egg-info/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
+# Project
 db/
+uv.lock
+Archive.zip

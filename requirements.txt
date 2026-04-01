@@ -3,3 +3,6 @@ streamlit>=1.38.0
 pdfplumber>=0.11.0
 pymupdf>=1.26.0
 python-dotenv>=1.0.0
+lancedb==0.30.0
+litellm<=1.82.6
+pytesseract>=0.3.10

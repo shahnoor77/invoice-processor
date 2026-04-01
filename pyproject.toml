@@ -6,6 +6,11 @@ authors = [{ name = "Your Name", email = "you@example.com" }]
 requires-python = ">=3.10,<3.14"
 dependencies = [
     "crewai[litellm,tools]==1.11.0",
+    "google-api-python-client>=2.193.0",
+    "google-auth>=2.49.1",
+    "google-auth-httplib2>=0.3.1",
+    "gspread>=6.2.1",
+    "pytesseract>=0.3.13",
     "streamlit>=1.38.0",
 ]
 
@@ -25,4 +30,4 @@ build-backend = "hatchling.build"
 type = "crew"
 
 [tool.uv]
-override-dependencies = ["litellm<=1.82.6"]
+override-dependencies = ["litellm<=1.82.6", "lancedb==0.30.0"]
