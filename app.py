@@ -396,15 +396,19 @@ with tab_upload:
         with col_approve:
             if st.button("✅ Approve & Send to ERP", use_container_width=True, type="primary"):
                 if st.session_state.extracted_json:
-                    ok, err = save_invoice(
-                        st.session_state.extracted_json,
-                        st.session_state.file_name,
-                        "APPROVED",
-                    )
-                    if ok:
-                        st.success("Saved to Google Sheets.")
+                    sheet_id = os.environ.get("GOOGLE_SHEET_ID")
+                    if sheet_id:
+                        ok, err = save_invoice(
+                            st.session_state.extracted_json,
+                            st.session_state.file_name,
+                            "APPROVED",
+                        )
+                        if ok:
+                            st.success("Saved to Google Sheets.")
+                        else:
+                            st.error(f"Sheets save failed: {err}")
                     else:
-                        st.error(f"Sheets save failed: {err}")
+                        st.info("Google Sheets not configured — skipping save. Set GOOGLE_SHEET_ID in .env to enable.")
                 else:
                     st.warning("No structured JSON found — sheet not updated. Check the Data Extraction step output above.")
                 st.session_state.approval_done = True
@@ -431,8 +435,11 @@ with tab_upload:
 # ── TAB 2: Processed Invoices ────────────────────────────────────────────────
 with tab_history:
     st.subheader("📋 Processed Invoices")
-    if st.button("🔄 Refresh"):
-        st.rerun()
+    if not os.environ.get("GOOGLE_SHEET_ID"):
+        st.info("Google Sheets not configured. Set GOOGLE_SHEET_ID and GOOGLE_CREDENTIALS_FILE in .env to enable invoice history.")
+    else:
+        if st.button("🔄 Refresh"):
+            st.rerun()
 
     records = get_processed_invoices()
     if records:
