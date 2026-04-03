@@ -37,13 +37,16 @@ structured_data_extraction:
     ---
 
     STRICT RULES:
+    - INVOICE NUMBER is critical — search the entire text for patterns like INV-, #, No., Number, Invoice No, Ref.
+      Copy it EXACTLY including any prefix (e.g. INV-2024-001, #1234, INV0042). Never set it to null if any number exists.
     - Copy every number EXACTLY as written (e.g. "1,250.00" → 1250.00)
-    - sender = party who ISSUED the invoice (FROM / vendor / supplier / letterhead)
+    - sender = party who ISSUED the invoice (FROM / vendor / supplier / company letterhead at top)
     - receiver = party who RECEIVES the invoice (TO / bill-to / ship-to / client)
+    - For addresses: copy the FULL address including street, city, state, zip, country as separate fields
     - Dates must be YYYY-MM-DD format
     - Numeric fields: numbers only, no currency symbols
     - If a field is not in the text, set it to null — never calculate or guess
-    - Copy line item description, quantity, unit price, and total EXACTLY as shown
+    - Copy ALL line items — do not skip any
     - total_amount must match the TOTAL/GRAND TOTAL line exactly
     - amount_due must match the BALANCE DUE / AMOUNT DUE line exactly
     - Do NOT perform any arithmetic — only copy what is written
@@ -73,7 +76,8 @@ structured_data_extraction:
     }
   expected_output: >
     Valid JSON only. Values copied verbatim from the raw invoice text.
-    No calculated values. No guessed values. Null for anything not found.
+    Invoice number must never be null if any reference number exists in the text.
+    Full addresses in separate city/country fields. No calculated values. Null only for truly missing fields.
   agent: data_extraction_specialist
 
 invoice_data_validation:

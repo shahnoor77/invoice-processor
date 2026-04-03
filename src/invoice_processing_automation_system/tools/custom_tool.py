@@ -133,7 +133,11 @@ class ImageTextExtractor(BaseTool):
                 pytesseract.pytesseract.tesseract_cmd = tesseract_path
             # On Linux, tesseract is in PATH by default (installed via apt)
 
-            img = Image.open(file_path).convert("L")  # grayscale
+            img = Image.open(file_path)
+            # Handle palette images with transparency
+            if img.mode in ("P", "PA"):
+                img = img.convert("RGBA")
+            img = img.convert("L")  # grayscale
 
             # Upscale small images — Tesseract works best at 300 DPI equivalent
             w, h = img.size
@@ -178,6 +182,48 @@ class ImageTextExtractor(BaseTool):
 
         except Exception as e:
             return f"Error extracting text from image: {str(e)}"
+
+
+def extract_image_with_llava(file_path: str, ollama_base_url: str = "http://110.39.187.178:11434") -> str:
+    """
+    Send image directly to LLaVA vision model for invoice data extraction.
+    Returns raw text description of the invoice content.
+    No OCR needed — LLaVA reads the image natively.
+    """
+    import base64
+    import requests
+
+    if not os.path.exists(file_path):
+        return f"Error: File not found at {file_path}"
+
+    try:
+        with open(file_path, "rb") as f:
+            image_b64 = base64.b64encode(f.read()).decode("utf-8")
+
+        prompt = (
+            "You are an invoice data extractor. Look at this invoice image carefully.\n"
+            "Extract ALL text and numbers you can see, preserving the exact values.\n"
+            "List every field you can identify: invoice number, dates, sender details, "
+            "receiver details, line items with quantities and prices, subtotal, tax, total.\n"
+            "Copy numbers EXACTLY as shown — do not round or calculate.\n"
+            "Output the raw extracted text in a structured format."
+        )
+
+        response = requests.post(
+            f"{ollama_base_url}/api/chat",
+            json={
+                "model": "llava:7b",
+                "messages": [{"role": "user", "content": prompt, "images": [image_b64]}],
+                "stream": False,
+            },
+            timeout=120,
+        )
+        response.raise_for_status()
+        content = response.json()["message"]["content"]
+        return f"LLAVA_RESULT: HIGH CONFIDENCE (vision model).\n\nExtracted text:\n{content}"
+
+    except Exception as e:
+        return f"Error extracting image with LLaVA: {str(e)}"
 
 
 class GmailInvoiceFetcherInput(BaseModel):
