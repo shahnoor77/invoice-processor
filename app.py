@@ -213,18 +213,56 @@ with tab_upload:
         saved_paths = []
         upload_dir = None
 
-        uploaded_files = st.file_uploader(
-            "Upload Invoice Files (PDF, PNG, JPG)",
-            type=["pdf", "png", "jpg", "jpeg"],
-            accept_multiple_files=True,
-        )
-        if uploaded_files:
-            upload_dir = tempfile.mkdtemp(prefix="invoices_")
-            for uf in uploaded_files:
-                fp = os.path.join(upload_dir, uf.name)
-                with open(fp, "wb") as f: f.write(uf.getbuffer())
-                saved_paths.append(fp)
-            st.success(f"{len(saved_paths)} file(s) ready")
+        input_method = st.radio("Select Input Method", ["Upload Files", "Fetch from Gmail API"], horizontal=True)
+
+        if input_method == "Upload Files":
+            uploaded_files = st.file_uploader(
+                "Upload Invoice Files (PDF, PNG, JPG)",
+                type=["pdf", "png", "jpg", "jpeg"],
+                accept_multiple_files=True,
+            )
+            if uploaded_files:
+                upload_dir = tempfile.mkdtemp(prefix="invoices_")
+                for uf in uploaded_files:
+                    fp = os.path.join(upload_dir, uf.name)
+                    with open(fp, "wb") as f: f.write(uf.getbuffer())
+                    saved_paths.append(fp)
+                st.success(f"{len(saved_paths)} file(s) ready")
+        else:
+            with st.expander("📧 Gmail API Settings", expanded=True):
+                col1, col2 = st.columns(2)
+                with col1:
+                    max_emails = st.number_input("Max Emails to Check", value=5, min_value=1, max_value=50)
+                with col2:
+                    query_filter = st.text_input("Gmail Query", value="in:inbox is:unread")
+                
+                if st.button("Fetch Invoices"):
+                    with st.spinner("Connecting to Gmail API and downloading invoices..."):
+                        try:
+                            from invoice_processing_automation_system.fetch_latest_emails import fetch_latest_invoice_attachments
+                            results = fetch_latest_invoice_attachments(
+                                max_results=max_emails,
+                                query=query_filter
+                            )
+                            if not results:
+                                st.warning("No invoices found.")
+                            st.session_state["email_fetch_results"] = results
+                        except Exception as e:
+                            st.error(f"Error fetching invoices: {str(e)}")
+            
+            if st.session_state.get("email_fetch_results"):
+                st.markdown("#### Downloaded Email Attachments")
+                selected_attachments = []
+                for idx, path in enumerate(st.session_state["email_fetch_results"]):
+                    if isinstance(path, str) and os.path.exists(path):
+                        file_name = os.path.basename(path)
+                        if st.checkbox(f"📎 {file_name}", key=f"att_gmail_{idx}", value=True):
+                            selected_attachments.append(path)
+                
+                if selected_attachments:
+                    saved_paths = selected_attachments
+                    upload_dir = "Gmail Fetch Temp Dir"
+                    st.success(f"{len(saved_paths)} attachment(s) selected")
 
         st.divider()
         with st.form("crew_inputs"):
@@ -241,7 +279,7 @@ with tab_upload:
                 st.session_state.step_outputs = []
                 st.session_state.extracted_json = None
                 st.session_state.run_error = None
-                st.session_state.file_name = os.path.basename(saved_paths[0])
+                st.session_state.file_name = ", ".join([os.path.basename(p) for p in saved_paths][:3]) + ("..." if len(saved_paths) > 3 else "")
                 st.session_state.phase = "extracting"
 
                 file_list = "\n".join(saved_paths)

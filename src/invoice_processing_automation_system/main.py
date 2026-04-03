@@ -14,7 +14,8 @@ def run():
     inputs = {
         'intake_source': 'sample_value',
         'erp_system': 'sample_value',
-        'notification_channel': 'sample_value'
+        'notification_channel': 'sample_value',
+        'ocr_text': 'sample ocr text extracted from invoice details...'
     }
     InvoiceProcessingAutomationSystemCrew().crew().kickoff(inputs=inputs)
 
@@ -26,7 +27,8 @@ def train():
     inputs = {
         'intake_source': 'sample_value',
         'erp_system': 'sample_value',
-        'notification_channel': 'sample_value'
+        'notification_channel': 'sample_value',
+        'ocr_text': 'sample ocr text extracted from invoice details...'
     }
     try:
         InvoiceProcessingAutomationSystemCrew().crew().train(n_iterations=int(sys.argv[1]), filename=sys.argv[2], inputs=inputs)
@@ -51,7 +53,8 @@ def test():
     inputs = {
         'intake_source': 'sample_value',
         'erp_system': 'sample_value',
-        'notification_channel': 'sample_value'
+        'notification_channel': 'sample_value',
+        'ocr_text': 'sample ocr text extracted from invoice details...'
     }
     try:
         InvoiceProcessingAutomationSystemCrew().crew().test(n_iterations=int(sys.argv[1]), openai_model_name=sys.argv[2], inputs=inputs)

@@ -2,6 +2,7 @@ import os
 import base64
 import logging
 import mimetypes
+import tempfile
 from typing import List, Dict, Any, Optional
 
 from google.auth.transport.requests import Request
@@ -143,8 +144,11 @@ def save_attachment(service, msg_id: str, attachment_meta: Dict[str, Any], save_
 def fetch_latest_invoice_attachments(
     max_results: int = 5,
     query: Optional[str] = DEFAULT_QUERY,
-    save_dir: str = DOWNLOAD_DIR
+    save_dir: Optional[str] = None
 ) -> List[str]:
+    if save_dir is None:
+        save_dir = tempfile.mkdtemp(prefix="invoices_")
+        
     service = get_gmail_service()
 
     response = service.users().messages().list(
