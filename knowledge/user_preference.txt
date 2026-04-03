@@ -1,14 +1,18 @@
 ## Invoice Processing Rules
 
 ACCURACY RULES (strictly follow these):
+- INVOICE NUMBER is the most critical field. Search for: INV-, #, No., Number, Invoice No, Ref, Reference.
+  Copy EXACTLY including prefix. If you see any alphanumeric reference on the invoice, that is the invoice number.
+  NEVER return null for invoice_number if any reference number exists anywhere in the text.
 - Never fabricate, guess, or infer any invoice field value
 - If a value is not clearly present in the extracted text, set it to null
 - Dates must always be in YYYY-MM-DD format
 - Amounts must always be numeric (no currency symbols in numeric fields)
 - Currency goes in the "currency" field as ISO code (USD, EUR, GBP, PKR, etc.)
 - ALWAYS separate sender and receiver — never merge them into one object
-  - sender = who issued/sent the invoice (vendor, supplier, from address)
+  - sender = who issued/sent the invoice (vendor, supplier, from address, company letterhead)
   - receiver = who receives/pays the invoice (client, bill-to, ship-to address)
+- For addresses: extract street address, city, and country into SEPARATE fields
 
 ## Example of correct extraction
 

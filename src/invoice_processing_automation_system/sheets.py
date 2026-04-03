@@ -147,9 +147,32 @@ def get_processed_invoices() -> list:
         gc = _get_client()
         sp = gc.open_by_key(sheet_id)
         ws = _ensure_sheet(sp)
-        return ws.get_all_records()
+        # Use get_all_values to avoid type conversion issues (phones parsed as ints etc.)
+        all_values = ws.get_all_values()
+        if len(all_values) < 2:
+            return []
+        headers = all_values[0]
+        return [dict(zip(headers, row)) for row in all_values[1:]]
     except Exception:
         return []
+
+
+def update_approval_status(row_number: int, status: str):
+    """Update the Approval Status cell for a specific row."""
+    sheet_id = os.environ.get("GOOGLE_SHEET_ID")
+    if not sheet_id:
+        return False, "GOOGLE_SHEET_ID not set"
+    try:
+        gc = _get_client()
+        sp = gc.open_by_key(sheet_id)
+        ws = _ensure_sheet(sp)
+        # Find the Approval Status column index
+        headers = ws.row_values(1)
+        col_idx = headers.index("Approval Status") + 1  # 1-based
+        ws.update_cell(row_number, col_idx, status)
+        return True, None
+    except Exception as e:
+        return False, str(e)
 
 
 def log_processing(file_name: str, status: str, error: str = "", model: str = ""):

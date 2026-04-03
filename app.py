@@ -1,12 +1,5 @@
 #!/usr/bin/env python
-import io
-import json
-import os
-import re
-import sys
-import tempfile
-import threading
-
+import io, json, os, re, sys, tempfile, threading
 import streamlit as st
 from dotenv import load_dotenv
 
@@ -21,205 +14,181 @@ except Exception:
 
 from invoice_processing_automation_system.crew import InvoiceProcessingAutomationSystemCrew
 from invoice_processing_automation_system.sheets import (
-    get_processed_invoices, log_processing, save_invoice
+    get_processed_invoices, save_invoice, update_approval_status, log_processing
 )
 
 st.set_page_config(page_title="Invoice Processing", page_icon="🧾", layout="wide")
-st.title("🧾 Invoice Processing Automation System")
-st.caption("Powered by CrewAI")
 
-TASK_LABELS = {
-    "invoice_file_detection_and_intake": ("1️⃣", "Document Intake", "File detection and text extraction"),
-    "structured_data_extraction": ("2️⃣", "Data Extraction", "Structured JSON extraction from invoice"),
-    "invoice_data_validation": ("3️⃣", "Validation", "Mathematical and logical validation"),
-    "erp_system_integration": ("4️⃣", "ERP Integration", "Push data to ERP system"),
-    "finance_team_notification": ("5️⃣", "Notification", "Notify finance team"),
-}
+# ── Global styles — light theme with blue accents ─────────────────────────────
+st.markdown("""
+<style>
+@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.3} }
+@keyframes spin { to{transform:rotate(360deg)} }
+</style>
+""", unsafe_allow_html=True)
 
-# ── Session state init ──────────────────────────────────────────────────────
+st.markdown('<h1 style="text-align:center;color:#1a56db;letter-spacing:2px;">🧾 Invoice Processing System</h1>', unsafe_allow_html=True)
+st.markdown('<p style="text-align:center;color:#6b7280;margin-top:-10px;">Powered by CrewAI</p>', unsafe_allow_html=True)
+
 for key, default in {
-    "step_outputs": [],
-    "extracted_json": None,
-    "validation_status": "",
-    "run_result": None,
-    "run_error": None,
-    "approval_done": False,
-    "file_name": "",
-    "phase": "idle",  # idle | extracting | awaiting_approval | running_erp | done
+    "step_outputs": [], "extracted_json": None,
+    "run_error": None, "file_name": "", "phase": "idle", "logs": "",
+    "inputs": {},
 }.items():
     if key not in st.session_state:
         st.session_state[key] = default
 
+# ── Helpers ───────────────────────────────────────────────────────────────────
 
-# ── Helpers ─────────────────────────────────────────────────────────────────
-
-def verify_and_fix_totals(inv: dict) -> dict:
-    """
-    Verify line item totals and grand total using Python arithmetic.
-    Flags mismatches but does NOT overwrite values from the invoice —
-    only adds a 'math_warnings' field so the user can see discrepancies.
-    """
+def verify_and_fix_totals(inv):
     warnings = []
-
-    def to_float(v):
-        try:
-            return float(str(v).replace(",", "").strip())
-        except Exception:
-            return None
-
-    # Check each line item: quantity * unit_price should equal total
+    def f(v):
+        try: return float(str(v).replace(",","").strip())
+        except: return None
     items = inv.get("line_items") or []
     for i, item in enumerate(items):
-        qty = to_float(item.get("quantity"))
-        price = to_float(item.get("unit_price"))
-        total = to_float(item.get("total"))
-        if qty and price and total:
-            expected = round(qty * price, 2)
-            if abs(expected - total) > 0.02:
-                warnings.append(f"Line item {i+1} '{item.get('description')}': {qty} × {price} = {expected}, but total shows {total}")
-
-    # Check subtotal = sum of line item totals
-    if items:
-        line_sum = sum(to_float(i.get("total")) or 0 for i in items)
-        subtotal = to_float(inv.get("subtotal"))
-        if subtotal and abs(line_sum - subtotal) > 0.02:
-            warnings.append(f"Subtotal mismatch: line items sum to {round(line_sum,2)}, but subtotal shows {subtotal}")
-
-    # Check total = subtotal + tax + shipping - discount
-    subtotal = to_float(inv.get("subtotal")) or 0
-    tax = to_float(inv.get("tax_amount")) or 0
-    shipping = to_float(inv.get("shipping")) or 0
-    discount = to_float(inv.get("discount_total")) or 0
-    total = to_float(inv.get("total_amount"))
-    if total and subtotal:
-        expected_total = round(subtotal + tax + shipping - discount, 2)
-        if abs(expected_total - total) > 0.02:
-            warnings.append(f"Total mismatch: {subtotal} + {tax} (tax) + {shipping} (shipping) - {discount} (discount) = {expected_total}, but total shows {total}")
-
-    if warnings:
-        inv["math_warnings"] = warnings
-
+        q,p,t = f(item.get("quantity")), f(item.get("unit_price")), f(item.get("total"))
+        if q and p and t and abs(round(q*p,2)-t) > 0.02:
+            warnings.append(f"Line {i+1} '{item.get('description')}': {q}×{p}={round(q*p,2)} but shows {t}")
+    sub,tax,ship,disc,tot = f(inv.get("subtotal")) or 0, f(inv.get("tax_amount")) or 0, f(inv.get("shipping")) or 0, f(inv.get("discount_total")) or 0, f(inv.get("total_amount"))
+    if tot and sub:
+        exp = round(sub+tax+ship-disc,2)
+        if abs(exp-tot) > 0.02:
+            warnings.append(f"Total: {sub}+{tax}tax+{ship}ship-{disc}disc={exp} but shows {tot}")
+    if warnings: inv["math_warnings"] = warnings
     return inv
 
-
-def parse_json_from_text(text: str):
-    if not text:
-        return None
-    # Try direct parse
-    try:
-        return json.loads(text.strip())
-    except Exception:
-        pass
-    # Try extracting from markdown code block
-    match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
-    if match:
-        try:
-            return json.loads(match.group(1))
-        except Exception:
-            pass
-    # Try finding the largest JSON object in the text
-    match = re.search(r"(\{[\s\S]*\})", text)
-    if match:
-        try:
-            return json.loads(match.group(1))
-        except Exception:
-            pass
+def parse_json(text):
+    if not text: return None
+    try: return json.loads(text.strip())
+    except: pass
+    for pat in [r"```(?:json)?\s*(\{.*?\})\s*```", r"(\{[\s\S]*\})"]:
+        m = re.search(pat, text, re.DOTALL)
+        if m:
+            try: return json.loads(m.group(1))
+            except: pass
     return None
 
+def fmt(v):
+    if v is None or str(v).strip() in ("","null","None"): return "—"
+    return str(v)
 
-def render_invoice_card(inv: dict):
-    # Sender / Receiver
-    sender = inv.get("sender") or inv.get("vendor_info") or {}
+def fmt_money(v, cur=""):
+    if v is None or str(v).strip() in ("","null","None"): return "—"
+    try: return f"{cur} {float(str(v).replace(',','')):.2f}".strip()
+    except: return str(v)
+
+def render_invoice(inv):
+    """Render invoice as styled HTML document — blue/black theme."""
+    sender = inv.get("sender") or {}
     receiver = inv.get("receiver") or {}
-    col1, col2 = st.columns(2)
-    with col1:
-        st.markdown("**Sender (Vendor)**")
-        st.write(sender.get("name") or "—")
-        st.write(sender.get("address") or "—")
-        st.write(f"{sender.get('city') or ''} {sender.get('country') or ''}".strip() or "—")
-        st.write(sender.get("phone") or "—")
-        st.write(sender.get("email") or "—")
-        if sender.get("tax_id"):
-            st.write(f"Tax ID: {sender['tax_id']}")
-    with col2:
-        st.markdown("**Receiver (Bill-To)**")
-        st.write(receiver.get("name") or "—")
-        st.write(receiver.get("address") or "—")
-        st.write(f"{receiver.get('city') or ''} {receiver.get('country') or ''}".strip() or "—")
-        st.write(receiver.get("phone") or "—")
-        st.write(receiver.get("email") or "—")
-
-    st.divider()
-
-    # Invoice details
-    d1, d2, d3, d4 = st.columns(4)
-    d1.write(f"**Invoice #:** {inv.get('invoice_number') or '—'}")
-    d2.write(f"**Date:** {inv.get('invoice_date') or '—'}")
-    d3.write(f"**Due:** {inv.get('due_date') or '—'}")
-    d4.write(f"**PO:** {inv.get('purchase_order') or '—'}")
-
-    p1, p2, p3 = st.columns(3)
-    p1.write(f"**Terms:** {inv.get('payment_terms') or '—'}")
-    p2.write(f"**Currency:** {inv.get('currency') or '—'}")
-    conf = inv.get("confidence", "")
-    p3.write(f"**Confidence:** {'✅ HIGH' if conf == 'HIGH' else '⚠️ LOW' if conf == 'LOW' else '—'}")
-
-    # Line items
     items = inv.get("line_items") or []
-    if items:
-        st.markdown("**Line Items**")
-        import pandas as pd
-        st.dataframe(pd.DataFrame(items).astype(str), use_container_width=True)
+    cur = inv.get("currency") or ""
 
-    st.divider()
+    rows = ""
+    for item in items:
+        rows += f"""<tr>
+            <td style="padding:10px 14px;border-bottom:1px solid #f3f4f6;">{fmt(item.get('description'))}</td>
+            <td style="padding:10px 14px;border-bottom:1px solid #f3f4f6;text-align:center;">{fmt(item.get('quantity'))}</td>
+            <td style="padding:10px 14px;border-bottom:1px solid #f3f4f6;text-align:right;">{fmt_money(item.get('unit_price'),cur)}</td>
+            <td style="padding:10px 14px;border-bottom:1px solid #f3f4f6;text-align:right;">{fmt_money(item.get('discount'),cur)}</td>
+            <td style="padding:10px 14px;border-bottom:1px solid #f3f4f6;text-align:right;color:#1a56db;font-weight:600;">{fmt_money(item.get('total'),cur)}</td>
+        </tr>"""
+    if not rows:
+        rows = '<tr><td colspan="5" style="padding:16px;text-align:center;color:#9ca3af;">No line items extracted</td></tr>'
 
-    # Totals
-    c1, c2, c3, c4, c5 = st.columns(5)
-    c1.metric("Subtotal", inv.get("subtotal") or "—")
-    c2.metric("Discount", inv.get("discount_total") or "—")
-    c3.metric("Tax", f"{inv.get('tax_amount') or '—'} ({inv.get('tax_rate') or '—'}%)")
-    c4.metric("Shipping", inv.get("shipping") or "—")
-    c5.metric("Total", inv.get("total_amount") or "—")
+    po_row = f"<div style='font-size:13px;color:#6b7280;margin-top:4px;'>PO: <strong style='color:#111827;'>{fmt(inv.get('purchase_order'))}</strong></div>" if inv.get('purchase_order') and inv.get('purchase_order') != 'null' else ""
+    terms_row = f"<div style='font-size:13px;color:#6b7280;margin-top:4px;'>Terms: <strong style='color:#111827;'>{fmt(inv.get('payment_terms'))}</strong></div>" if inv.get('payment_terms') and inv.get('payment_terms') != 'null' else ""
+    notes_row = f"<div style='padding:14px 18px;background:#eff6ff;border-left:3px solid #1a56db;border-radius:4px;margin-bottom:12px;font-size:13px;color:#1e40af;'><strong>Notes:</strong> {fmt(inv.get('notes'))}</div>" if inv.get('notes') and inv.get('notes') != 'null' else ""
+    bank_row = f"<div style='padding:14px 18px;background:#f0fdf4;border-left:3px solid #16a34a;border-radius:4px;font-size:13px;color:#166534;'><strong>Bank Details:</strong> {fmt(inv.get('bank_details'))}</div>" if inv.get('bank_details') and inv.get('bank_details') != 'null' else ""
+    disc_row = f"<tr><td style='padding:6px 14px;color:#6b7280;font-size:13px;'>Discount</td><td style='padding:6px 14px;text-align:right;font-size:13px;color:#111827;'>{fmt_money(inv.get('discount_total'),cur)}</td></tr>" if inv.get('discount_total') and str(inv.get('discount_total')) not in ('null','0','0.0') else ""
+    ship_row = f"<tr><td style='padding:6px 14px;color:#6b7280;font-size:13px;'>Shipping</td><td style='padding:6px 14px;text-align:right;font-size:13px;color:#111827;'>{fmt_money(inv.get('shipping'),cur)}</td></tr>" if inv.get('shipping') and str(inv.get('shipping')) not in ('null','0','0.0') else ""
+    paid_row = f"<tr><td style='padding:6px 14px;color:#6b7280;font-size:13px;'>Amount Paid</td><td style='padding:6px 14px;text-align:right;font-size:13px;color:#111827;'>{fmt_money(inv.get('amount_paid'),cur)}</td></tr>" if inv.get('amount_paid') and str(inv.get('amount_paid')) not in ('null','0','0.0') else ""
+    due_row = f"<tr style='background:#fef9c3;'><td style='padding:10px 14px;font-weight:700;font-size:14px;color:#854d0e;'>Amount Due</td><td style='padding:10px 14px;text-align:right;font-weight:700;font-size:14px;color:#854d0e;'>{fmt_money(inv.get('amount_due'),cur)}</td></tr>" if inv.get('amount_due') and inv.get('amount_due') != 'null' else ""
+    conf = inv.get("confidence","")
+    conf_badge = f"<span style='background:{'#dcfce7' if conf=='HIGH' else '#fef3c7'};color:{'#166534' if conf=='HIGH' else '#92400e'};padding:3px 10px;border-radius:12px;font-size:11px;font-weight:600;'>{'✅ HIGH' if conf=='HIGH' else '⚠️ LOW'} CONFIDENCE</span>" if conf else ""
 
-    a1, a2 = st.columns(2)
-    a1.metric("Amount Paid", inv.get("amount_paid") or "—")
-    a2.metric("Amount Due", inv.get("amount_due") or "—")
-
-    if inv.get("notes"):
-        st.info(f"Notes: {inv['notes']}")
-    if inv.get("bank_details"):
-        st.info(f"Bank: {inv['bank_details']}")
+    html = f"""
+    <div style="font-family:'Segoe UI',Arial,sans-serif;background:#ffffff;border:1px solid #e5e7eb;border-radius:12px;padding:40px;color:#111827;margin-bottom:20px;box-shadow:0 2px 12px rgba(0,0,0,0.08);">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:32px;padding-bottom:24px;border-bottom:2px solid #1a56db;">
+            <div>
+                <div style="font-size:32px;font-weight:800;color:#1a56db;letter-spacing:3px;">INVOICE</div>
+                <div style="font-size:14px;color:#6b7280;margin-top:6px;">#{fmt(inv.get('invoice_number'))}</div>
+                <div style="margin-top:10px;">{conf_badge}</div>
+            </div>
+            <div style="text-align:right;">
+                <div style="font-size:13px;color:#6b7280;">Invoice Date: <strong style="color:#111827;">{fmt(inv.get('invoice_date'))}</strong></div>
+                <div style="font-size:13px;color:#6b7280;margin-top:6px;">Due Date: <strong style="color:#1a56db;">{fmt(inv.get('due_date'))}</strong></div>
+                {po_row}{terms_row}
+            </div>
+        </div>
+        <div style="display:flex;gap:32px;margin-bottom:32px;">
+            <div style="flex:1;background:#f0f7ff;border:1px solid #bfdbfe;border-radius:8px;padding:20px;">
+                <div style="font-size:10px;font-weight:700;color:#1a56db;text-transform:uppercase;letter-spacing:2px;margin-bottom:12px;">FROM</div>
+                <div style="font-weight:700;font-size:16px;color:#111827;">{fmt(sender.get('name'))}</div>
+                <div style="font-size:13px;color:#4b5563;margin-top:6px;">{fmt(sender.get('address'))}</div>
+                <div style="font-size:13px;color:#4b5563;">{fmt(sender.get('city'))} {fmt(sender.get('country'))}</div>
+                {"<div style='font-size:13px;color:#4b5563;margin-top:4px;'>📞 " + fmt(sender.get('phone')) + "</div>" if sender.get('phone') and sender.get('phone') != 'null' else ""}
+                {"<div style='font-size:13px;color:#4b5563;'>✉️ " + fmt(sender.get('email')) + "</div>" if sender.get('email') and sender.get('email') != 'null' else ""}
+                {"<div style='font-size:12px;color:#9ca3af;margin-top:6px;'>Tax ID: " + fmt(sender.get('tax_id')) + "</div>" if sender.get('tax_id') and sender.get('tax_id') != 'null' else ""}
+            </div>
+            <div style="flex:1;background:#f0f7ff;border:1px solid #bfdbfe;border-radius:8px;padding:20px;">
+                <div style="font-size:10px;font-weight:700;color:#1a56db;text-transform:uppercase;letter-spacing:2px;margin-bottom:12px;">BILL TO</div>
+                <div style="font-weight:700;font-size:16px;color:#111827;">{fmt(receiver.get('name'))}</div>
+                <div style="font-size:13px;color:#4b5563;margin-top:6px;">{fmt(receiver.get('address'))}</div>
+                <div style="font-size:13px;color:#4b5563;">{fmt(receiver.get('city'))} {fmt(receiver.get('country'))}</div>
+                {"<div style='font-size:13px;color:#4b5563;margin-top:4px;'>📞 " + fmt(receiver.get('phone')) + "</div>" if receiver.get('phone') and receiver.get('phone') != 'null' else ""}
+                {"<div style='font-size:13px;color:#4b5563;'>✉️ " + fmt(receiver.get('email')) + "</div>" if receiver.get('email') and receiver.get('email') != 'null' else ""}
+            </div>
+        </div>
+        <table style="width:100%;border-collapse:collapse;margin-bottom:28px;">
+            <thead>
+                <tr style="background:#1a56db;color:#ffffff;">
+                    <th style="padding:12px 14px;text-align:left;font-size:12px;font-weight:600;letter-spacing:1px;">DESCRIPTION</th>
+                    <th style="padding:12px 14px;text-align:center;font-size:12px;font-weight:600;">QTY</th>
+                    <th style="padding:12px 14px;text-align:right;font-size:12px;font-weight:600;">UNIT PRICE</th>
+                    <th style="padding:12px 14px;text-align:right;font-size:12px;font-weight:600;">DISCOUNT</th>
+                    <th style="padding:12px 14px;text-align:right;font-size:12px;font-weight:600;">TOTAL</th>
+                </tr>
+            </thead>
+            <tbody>{rows}</tbody>
+        </table>
+        <div style="display:flex;justify-content:flex-end;margin-bottom:24px;">
+            <table style="width:300px;border-collapse:collapse;background:#f9fafb;border:1px solid #e5e7eb;border-radius:8px;overflow:hidden;">
+                <tr><td style="padding:8px 14px;color:#6b7280;font-size:13px;">Subtotal</td><td style="padding:8px 14px;text-align:right;font-size:13px;color:#111827;">{fmt_money(inv.get('subtotal'),cur)}</td></tr>
+                {disc_row}
+                <tr><td style="padding:8px 14px;color:#6b7280;font-size:13px;">Tax ({fmt(inv.get('tax_rate'))}%)</td><td style="padding:8px 14px;text-align:right;font-size:13px;color:#111827;">{fmt_money(inv.get('tax_amount'),cur)}</td></tr>
+                {ship_row}
+                <tr style="border-top:2px solid #1a56db;background:#eff6ff;"><td style="padding:12px 14px;font-weight:700;font-size:16px;color:#1a56db;">TOTAL</td><td style="padding:12px 14px;text-align:right;font-weight:700;font-size:16px;color:#1a56db;">{fmt_money(inv.get('total_amount'),cur)}</td></tr>
+                {paid_row}{due_row}
+            </table>
+        </div>
+        {notes_row}{bank_row}
+        <div style="margin-top:24px;padding-top:16px;border-top:1px solid #e5e7eb;font-size:11px;color:#9ca3af;text-align:center;">
+            Invoice Processing Automation System • CrewAI
+        </div>
+    </div>"""
+    st.html(html)
     if inv.get("math_warnings"):
-        st.warning("⚠️ Math verification found discrepancies — check OCR text for misread numbers:")
+        st.warning("⚠️ Math discrepancies detected:")
         for w in inv["math_warnings"]:
-            st.warning(f"• {w}")
+            st.caption(f"• {w}")
     with st.expander("Raw JSON"):
         st.json(inv)
 
-
 def run_extraction_crew(inputs, step_outputs, result_holder, task_callback):
-    # Ensure env vars are loaded in this thread
     from dotenv import load_dotenv
     load_dotenv(override=True)
-
     class StreamCapture(io.StringIO):
         def __init__(self):
-            super().__init__()
-            self._log = []
-            self._orig = sys.stdout
+            super().__init__(); self._log=[]; self._orig=sys.stdout
         def write(self, text):
             self._orig.write(text)
-            if text.strip():
-                self._log.append(text)
+            if text.strip(): self._log.append(text)
             return len(text)
-        def flush(self):
-            self._orig.flush()
-        def get_log(self):
-            return "\n".join(self._log)
-
-    capture = StreamCapture()
-    old = sys.stdout
-    sys.stdout = capture
+        def flush(self): self._orig.flush()
+        def get_log(self): return "\n".join(self._log)
+    capture = StreamCapture(); old = sys.stdout; sys.stdout = capture
     try:
         crew = InvoiceProcessingAutomationSystemCrew()
         crew.set_task_callback(task_callback)
@@ -232,233 +201,238 @@ def run_extraction_crew(inputs, step_outputs, result_holder, task_callback):
     finally:
         sys.stdout = old
 
-
 # ════════════════════════════════════════════════════════════════════════════
 # TABS
 # ════════════════════════════════════════════════════════════════════════════
 tab_upload, tab_history = st.tabs(["📤 Process Invoice", "📋 Processed Invoices"])
 
-# ── TAB 1: Process Invoice ───────────────────────────────────────────────────
+# ── TAB 1 ─────────────────────────────────────────────────────────────────────
 with tab_upload:
 
-    saved_paths = []
-    upload_dir = None
+    if st.session_state.phase == "idle":
+        saved_paths = []
+        upload_dir = None
 
-    uploaded_files = st.file_uploader(
-        "Upload Invoice Files (PDF, PNG, JPG)",
-        type=["pdf", "png", "jpg", "jpeg"],
-        accept_multiple_files=True,
-    )
-    if uploaded_files:
-        upload_dir = tempfile.mkdtemp(prefix="invoices_")
-        for uf in uploaded_files:
-            fp = os.path.join(upload_dir, uf.name)
-            with open(fp, "wb") as f:
-                f.write(uf.getbuffer())
-            saved_paths.append(fp)
-        st.success(f"{len(saved_paths)} file(s) ready: {', '.join(os.path.basename(p) for p in saved_paths)}")
+        uploaded_files = st.file_uploader(
+            "Upload Invoice Files (PDF, PNG, JPG)",
+            type=["pdf", "png", "jpg", "jpeg"],
+            accept_multiple_files=True,
+        )
+        if uploaded_files:
+            upload_dir = tempfile.mkdtemp(prefix="invoices_")
+            for uf in uploaded_files:
+                fp = os.path.join(upload_dir, uf.name)
+                with open(fp, "wb") as f: f.write(uf.getbuffer())
+                saved_paths.append(fp)
+            st.success(f"{len(saved_paths)} file(s) ready")
 
-    st.divider()
+        st.divider()
+        with st.form("crew_inputs"):
+            c1, c2 = st.columns(2)
+            with c1: erp_system = st.text_input("ERP System", placeholder="SAP, QuickBooks, NetSuite")
+            with c2: notification_channel = st.text_input("Notification Channel", placeholder="email, Slack #finance")
+            extra_prompt = st.text_area("Additional Instructions (optional)", height=60)
+            submitted = st.form_submit_button("🚀 Process Invoice", use_container_width=True)
 
-    with st.form("crew_inputs"):
-        col1, col2 = st.columns(2)
-        with col1:
-            erp_system = st.text_input("ERP System", placeholder="e.g. SAP, QuickBooks, NetSuite")
-        with col2:
-            notification_channel = st.text_input("Notification Channel", placeholder="e.g. email, Slack #finance")
-        extra_prompt = st.text_area("Additional Instructions (optional)", height=80)
-        submitted = st.form_submit_button("🚀 Run Invoice Processing", use_container_width=True)
+        if submitted:
+            if not saved_paths or not erp_system or not notification_channel:
+                st.error("Please upload a file and fill in all fields.")
+            else:
+                st.session_state.step_outputs = []
+                st.session_state.extracted_json = None
+                st.session_state.run_error = None
+                st.session_state.file_name = os.path.basename(saved_paths[0])
+                st.session_state.phase = "extracting"
 
-    # ── Phase: Run extraction ────────────────────────────────────────────────
-    if submitted:
-        if not saved_paths or not erp_system or not notification_channel:
-            st.error("Please upload at least one file and fill in all required fields.")
-        else:
-            # Reset state for new run
-            st.session_state.step_outputs = []
-            st.session_state.extracted_json = None
-            st.session_state.validation_status = ""
-            st.session_state.run_result = None
-            st.session_state.run_error = None
-            st.session_state.approval_done = False
-            st.session_state.file_name = os.path.basename(saved_paths[0])
-            st.session_state.phase = "extracting"
+                file_list = "\n".join(saved_paths)
+                intake_source = f"Directory: {upload_dir}\n\nFiles to process:\n{file_list}"
+                if extra_prompt: intake_source += f"\n\nAdditional instructions: {extra_prompt}"
 
-            file_list = "\n".join(saved_paths)
-            intake_source = f"Directory: {upload_dir}\n\nFiles to process:\n{file_list}"
-            if extra_prompt:
-                intake_source += f"\n\nAdditional instructions: {extra_prompt}"
+                from invoice_processing_automation_system.tools.custom_tool import PDFTextExtractor, ImageTextExtractor, extract_image_with_llava
+                pdf_tool, img_tool = PDFTextExtractor(), ImageTextExtractor()
+                ocr_texts = []
+                ollama_url = os.environ.get("OLLAMA_BASE_URL", "http://110.39.187.178:11434")
+                with st.spinner("Reading invoice..."):
+                    for fp in saved_paths:
+                        ext = os.path.splitext(fp)[-1].lower()
+                        if ext == ".pdf":
+                            result = pdf_tool._run(fp)
+                        else:
+                            # Use LLaVA vision model for images — no OCR needed
+                            result = extract_image_with_llava(fp, ollama_url)
+                            # Fallback to Tesseract if LLaVA fails
+                            if result.startswith("Error"):
+                                result = img_tool._run(fp)
+                        ocr_texts.append(f"=== {os.path.basename(fp)} ===\n{result}")
+                ocr_text = "\n\n".join(ocr_texts)
 
-            # Run OCR directly in Python — pass clean text to crew to eliminate hallucination
-            from invoice_processing_automation_system.tools.custom_tool import PDFTextExtractor, ImageTextExtractor
-            ocr_texts = []
-            pdf_tool = PDFTextExtractor()
-            img_tool = ImageTextExtractor()
-            with st.spinner("Extracting text from files..."):
-                for fp in saved_paths:
-                    ext = os.path.splitext(fp)[-1].lower()
-                    result = pdf_tool._run(fp) if ext == ".pdf" else img_tool._run(fp)
-                    ocr_texts.append(f"=== {os.path.basename(fp)} ===\n{result}")
-            ocr_text = "\n\n".join(ocr_texts)
+                st.session_state.inputs = {
+                    "intake_source": intake_source, "ocr_text": ocr_text,
+                    "erp_system": erp_system, "notification_channel": notification_channel,
+                }
+                st.rerun()
 
-            # Show OCR output so user can verify before crew runs
-            with st.expander("🔍 Raw OCR Text (verify numbers before processing)", expanded=False):
-                st.code(ocr_text, language="text")
+    elif st.session_state.phase == "extracting":
+        # ── Processing animation ──────────────────────────────────────────────
+        st.markdown("""
+        <div style="text-align:center;padding:60px 20px;">
+            <div style="display:inline-block;width:64px;height:64px;border:4px solid #bfdbfe;border-top:4px solid #1a56db;border-radius:50%;animation:spin 1s linear infinite;margin-bottom:24px;"></div>
+            <div style="font-size:22px;font-weight:600;color:#1a56db;margin-bottom:8px;">Processing Invoice</div>
+            <div style="font-size:14px;color:#6b7280;">AI agents are extracting and validating data...</div>
+            <div style="margin-top:24px;display:flex;justify-content:center;gap:8px;">
+                <span style="width:8px;height:8px;background:#1a56db;border-radius:50%;display:inline-block;animation:pulse 1.4s ease-in-out 0s infinite;"></span>
+                <span style="width:8px;height:8px;background:#1a56db;border-radius:50%;display:inline-block;animation:pulse 1.4s ease-in-out 0.2s infinite;"></span>
+                <span style="width:8px;height:8px;background:#1a56db;border-radius:50%;display:inline-block;animation:pulse 1.4s ease-in-out 0.4s infinite;"></span>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
 
-            st.session_state.inputs = {
-                "intake_source": intake_source,
-                "ocr_text": ocr_text,
-                "erp_system": erp_system,
-                "notification_channel": notification_channel,
-            }
-
-    # ── Run crew in background ───────────────────────────────────────────────
-    if st.session_state.phase == "extracting":
         step_outputs = []
         result_holder = {"result": None, "error": None, "logs": ""}
 
         def task_callback(task_output):
-            name = getattr(task_output, "name", "Unknown")
-            agent_name = getattr(task_output, "agent", "")
-            raw = getattr(task_output, "raw", str(task_output))
-            step_outputs.append({"name": name, "agent": agent_name, "raw": raw})
+            step_outputs.append({
+                "name": getattr(task_output, "name", "Unknown"),
+                "agent": getattr(task_output, "agent", ""),
+                "raw": getattr(task_output, "raw", str(task_output)),
+            })
 
-        with st.spinner("Running crew... this may take a few minutes."):
-            t = threading.Thread(
-                target=run_extraction_crew,
-                args=(st.session_state.inputs, step_outputs, result_holder, task_callback)
-            )
-            t.start()
-            t.join()
+        t = threading.Thread(target=run_extraction_crew,
+                             args=(st.session_state.inputs, step_outputs, result_holder, task_callback))
+        t.start(); t.join()
 
         st.session_state.step_outputs = step_outputs
-        st.session_state.run_result = result_holder.get("result")
         st.session_state.run_error = result_holder.get("error")
         st.session_state.logs = result_holder.get("logs", "")
 
-        # Extract JSON from extraction step output
+        extracted_json = None
         for step in step_outputs:
             if step["name"] == "structured_data_extraction":
-                parsed = parse_json_from_text(step["raw"])
-                # Python-side math verification — correct totals if model got them wrong
-                if parsed:
-                    parsed = verify_and_fix_totals(parsed)
-                st.session_state.extracted_json = parsed
+                parsed = parse_json(step["raw"])
+                if parsed: parsed = verify_and_fix_totals(parsed)
+                extracted_json = parsed
                 if not parsed:
-                    st.session_state.extraction_raw = step["raw"]
-            if step["name"] == "invoice_data_validation":
-                raw = step["raw"].lower()
-                st.session_state.validation_status = "PASS" if "pass" in raw else "FAIL"
+                    # Store raw for debug
+                    st.session_state["extraction_raw_debug"] = step["raw"][:500]
 
-        if result_holder.get("error"):
-            st.session_state.phase = "done"
-            log_processing(
-                st.session_state.file_name, "ERROR",
-                result_holder["error"],
-                os.environ.get("MODEL", "unknown")
-            )
-        else:
-            st.session_state.phase = "awaiting_approval"
+        st.session_state.extracted_json = extracted_json
 
+        if not result_holder.get("error") and extracted_json:
+            sheet_id = os.environ.get("GOOGLE_SHEET_ID")
+            if sheet_id:
+                save_invoice(extracted_json, st.session_state.file_name, "PENDING")
+
+        st.session_state.phase = "done"
         st.rerun()
 
-    # ── Show step outputs ────────────────────────────────────────────────────
-    if st.session_state.phase in ("awaiting_approval", "done") and st.session_state.step_outputs:
-        st.subheader("📊 Agent Outputs")
-        for i, step in enumerate(st.session_state.step_outputs):
-            name = step["name"]
-            icon, title, desc = TASK_LABELS.get(name, ("🔹", name, ""))
-            with st.expander(f"{icon} Step {i+1}: {title}", expanded=(name == "structured_data_extraction")):
-                st.caption(desc)
-                if step["agent"]:
-                    st.markdown(f"Agent: {step['agent']}")
-                st.divider()
-                if name == "structured_data_extraction" and st.session_state.extracted_json:
-                    render_invoice_card(st.session_state.extracted_json)
-                else:
+    elif st.session_state.phase == "done":
+        if st.session_state.run_error:
+            st.error(f"Processing failed: {st.session_state.run_error}")
+            with st.expander("Technical Details"):
+                st.code(st.session_state.logs, language="text")
+        elif st.session_state.extracted_json:
+            st.success("✅ Invoice processed successfully — review below and approve/reject in the Processed Invoices tab.")
+            render_invoice(st.session_state.extracted_json)
+            with st.expander("🔧 Technical Details", expanded=False):
+                for step in st.session_state.step_outputs:
+                    st.markdown(f"**{step['name']}**")
                     st.markdown(step["raw"])
-
-        if hasattr(st.session_state, "logs") and st.session_state.logs:
-            with st.expander("📋 Raw Logs", expanded=False):
+                    st.divider()
+        else:
+            st.warning("Processing completed but no structured data was extracted.")
+            if st.session_state.get("extraction_raw_debug"):
+                with st.expander("Debug — raw extraction output"):
+                    st.code(st.session_state["extraction_raw_debug"], language="text")
+            with st.expander("Technical Details"):
                 st.code(st.session_state.logs, language="text")
 
-    # ── Approval gate ────────────────────────────────────────────────────────
-    if st.session_state.phase == "awaiting_approval" and not st.session_state.approval_done:
-        st.divider()
-        st.subheader("✅ Approval Required")
-        st.info("Review the extracted invoice data above before sending to ERP and notifying the finance team.")
+        if st.button("Process Another Invoice"):
+            st.session_state.phase = "idle"
+            st.session_state.extracted_json = None
+            st.session_state.step_outputs = []
+            st.rerun()
 
-        if st.session_state.extracted_json:
-            render_invoice_card(st.session_state.extracted_json)
-
-        col_approve, col_reject = st.columns(2)
-
-        with col_approve:
-            if st.button("✅ Approve & Send to ERP", use_container_width=True, type="primary"):
-                if st.session_state.extracted_json:
-                    sheet_id = os.environ.get("GOOGLE_SHEET_ID")
-                    if sheet_id:
-                        ok, err = save_invoice(
-                            st.session_state.extracted_json,
-                            st.session_state.file_name,
-                            "APPROVED",
-                        )
-                        if ok:
-                            st.success("Saved to Google Sheets.")
-                        else:
-                            st.error(f"Sheets save failed: {err}")
-                    else:
-                        st.info("Google Sheets not configured — skipping save. Set GOOGLE_SHEET_ID in .env to enable.")
-                else:
-                    st.warning("No structured JSON found — sheet not updated. Check the Data Extraction step output above.")
-                st.session_state.approval_done = True
-                st.session_state.phase = "done"
-                st.rerun()
-
-        with col_reject:
-            reject_reason = st.text_input("Rejection reason (optional)")
-            if st.button("❌ Reject", use_container_width=True):
-                if st.session_state.extracted_json:
-                    save_invoice(
-                        st.session_state.extracted_json,
-                        st.session_state.file_name,
-                        f"REJECTED: {reject_reason}",
-                    )
-                st.session_state.approval_done = True
-                st.session_state.phase = "done"
-                st.warning("Invoice rejected and logged.")
-                st.rerun()
-
-    if st.session_state.phase == "done" and st.session_state.run_error:
-        st.error(f"Crew execution failed: {st.session_state.run_error}")
-
-# ── TAB 2: Processed Invoices ────────────────────────────────────────────────
+# ── TAB 2 ─────────────────────────────────────────────────────────────────────
 with tab_history:
-    st.subheader("📋 Processed Invoices")
+    st.markdown('<h3 style="color:#4a9eff;">Processed Invoices</h3>', unsafe_allow_html=True)
+
     if not os.environ.get("GOOGLE_SHEET_ID"):
-        st.info("Google Sheets not configured. Set GOOGLE_SHEET_ID and GOOGLE_CREDENTIALS_FILE in .env to enable invoice history.")
+        st.info("Google Sheets not configured. Set GOOGLE_SHEET_ID in .env to enable history.")
     else:
         if st.button("🔄 Refresh"):
             st.rerun()
 
-    records = get_processed_invoices()
-    if records:
-        import pandas as pd
-        df = pd.DataFrame(records)
-        # Convert all columns to string to avoid pyarrow type conversion errors
-        df = df.astype(str).replace("nan", "").replace("None", "")
-        st.dataframe(df, use_container_width=True)
+        records = get_processed_invoices()
+        if not records:
+            st.info("No processed invoices yet.")
+        else:
+            import pandas as pd
+            df = pd.DataFrame(records).astype(str).replace("nan","").replace("None","")
 
-        # Summary metrics
-        total = len(df)
-        approved = len(df[df["Approval Status"].str.startswith("APPROVED")]) if "Approval Status" in df.columns else 0
-        rejected = len(df[df["Approval Status"].str.startswith("REJECTED")]) if "Approval Status" in df.columns else 0
-        m1, m2, m3 = st.columns(3)
-        m1.metric("Total Processed", total)
-        m2.metric("Approved", approved)
-        m3.metric("Rejected", rejected)
-    else:
-        st.info("No processed invoices yet. Run the crew to start processing.")
+            # Metrics
+            total = len(df)
+            pending = len(df[df.get("Approval Status","") == "PENDING"]) if "Approval Status" in df.columns else 0
+            approved = len(df[df["Approval Status"].str.startswith("APPROVED")]) if "Approval Status" in df.columns else 0
+            rejected = len(df[df["Approval Status"].str.startswith("REJECTED")]) if "Approval Status" in df.columns else 0
+            m1,m2,m3,m4 = st.columns(4)
+            m1.metric("Total",total); m2.metric("Pending",pending)
+            m3.metric("Approved",approved); m4.metric("Rejected",rejected)
+
+            st.divider()
+
+            # Summary table — only the fields user requested
+            show = ["Timestamp","Invoice Number","Invoice Date","Due Date",
+                    "Receiver Name","Subtotal","Tax Amount","Total Amount","Currency","Approval Status"]
+            show_cols = [c for c in show if c in df.columns]
+            st.dataframe(df[show_cols], use_container_width=True, hide_index=True)
+
+            st.divider()
+            st.markdown('<h4 style="color:#4a9eff;">Approve / Reject</h4>', unsafe_allow_html=True)
+
+            pending_df = df[df["Approval Status"] == "PENDING"] if "Approval Status" in df.columns else df
+            if pending_df.empty:
+                st.info("No pending invoices.")
+            else:
+                options = []
+                for _, row in pending_df.iterrows():
+                    inv_no = row.get("Invoice Number","—")
+                    receiver = row.get("Receiver Name","—")
+                    total_amt = row.get("Total Amount","—")
+                    ts = row.get("Timestamp","")
+                    options.append(f"{ts} | #{inv_no} | {receiver} | {total_amt}")
+
+                selected = st.selectbox("Select invoice to review", options)
+                idx = options.index(selected)
+                row = pending_df.iloc[idx]
+
+                # Show invoice template
+                full_json_str = row.get("Full JSON","")
+                if full_json_str:
+                    try:
+                        inv_data = json.loads(full_json_str)
+                        render_invoice(inv_data)
+                    except Exception:
+                        # Fallback summary
+                        sc1,sc2,sc3,sc4,sc5 = st.columns(5)
+                        sc1.metric("Invoice #", row.get("Invoice Number","—"))
+                        sc2.metric("Date", row.get("Invoice Date","—"))
+                        sc3.metric("Due", row.get("Due Date","—"))
+                        sc4.metric("Bill To", row.get("Receiver Name","—"))
+                        sc5.metric("Total", f"{row.get('Total Amount','—')} {row.get('Currency','')}")
+
+                row_number = pending_df.index[idx] + 2
+                btn1, btn2 = st.columns(2)
+                with btn1:
+                    if st.button("✅ Approve", use_container_width=True, type="primary"):
+                        ok, err = update_approval_status(row_number, "APPROVED")
+                        if ok: st.success("Approved."); st.rerun()
+                        else: st.error(f"Failed: {err}")
+                with btn2:
+                    reject_reason = st.text_input("Rejection reason (optional)", key="reject_reason")
+                    if st.button("❌ Reject", use_container_width=True):
+                        ok, err = update_approval_status(row_number, f"REJECTED: {reject_reason}")
+                        if ok: st.warning("Rejected."); st.rerun()
+                        else: st.error(f"Failed: {err}")
 
 st.divider()
-st.caption("Invoice Processing Automation System • CrewAI")
+st.markdown('<p style="text-align:center;color:#9ca3af;font-size:12px;">Invoice Processing Automation System • CrewAI</p>', unsafe_allow_html=True)
