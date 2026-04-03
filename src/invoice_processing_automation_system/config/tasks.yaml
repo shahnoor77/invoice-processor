@@ -1,4 +1,13 @@
 ---
+gmail_invoice_fetch_task:
+  description: >
+    Fetch the latest Gmail emails with attachments, filters invoice attachments
+    based on filename containing 'invoice', saves them locally, and returns a list of
+    saved file paths.
+  expected_output: >
+    A Python list of saved invoice file paths.
+  agent: gmail_invoice_fetch_agent
+
 invoice_file_detection_and_intake:
   description: >
     Invoice files have been uploaded at: {intake_source}

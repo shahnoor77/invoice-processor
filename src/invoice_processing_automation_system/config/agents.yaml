@@ -1,4 +1,12 @@
 ---
+gmail_invoice_fetch_agent:
+  role: Gmail Invoice Fetcher
+  goal: >
+    Fetch latest invoice attachments from Gmail and return saved file paths.
+  backstory: >
+    You are a Gmail invoice fetcher with expertise in fetching and filtering
+    invoice attachments from Gmail.
+
 document_intake_specialist:
   role: Document Intake Specialist
   goal: Monitor and detect new invoice files from various sources including {intake_source}

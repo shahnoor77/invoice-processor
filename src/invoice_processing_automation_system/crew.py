@@ -4,7 +4,7 @@ from typing import Callable, Optional
 import litellm
 from crewai import LLM, Agent, Crew, Process, Task
 from crewai.project import CrewBase, agent, crew, task
-from invoice_processing_automation_system.tools.custom_tool import PDFTextExtractor, ImageTextExtractor
+from invoice_processing_automation_system.tools.custom_tool import PDFTextExtractor, ImageTextExtractor, GmailInvoiceFetcher
 
 OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://110.39.187.178:11434")
 OLLAMA_MODEL = "ollama/qwen3.5:9b"
@@ -43,7 +43,17 @@ class InvoiceProcessingAutomationSystemCrew:
     def set_task_callback(self, callback: Callable):
         self._task_callback = callback
         return self
-
+    @agent 
+    def gmail_invoice_fetch_agent(self) -> Agent:
+        return Agent(
+            config=self.agents_config["gmail_invoice_fetch_agent"],
+            tools=[GmailInvoiceFetcher()],
+            reasoning=False,
+            inject_date=False,
+            allow_delegation=False,
+            max_iter=3,
+            llm=make_llm(),
+        )
     @agent
     def document_intake_specialist(self) -> Agent:
         return Agent(
@@ -105,6 +115,9 @@ class InvoiceProcessingAutomationSystemCrew:
             apps=["google_gmail/send_email"],
             llm=make_llm(),
         )
+    @task
+    def gmail_invoice_fetch_task(self) -> Task:
+        return Task(config=self.tasks_config["gmail_invoice_fetch_task"], markdown=False)
 
     @task
     def invoice_file_detection_and_intake(self) -> Task:

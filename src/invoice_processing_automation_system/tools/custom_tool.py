@@ -1,8 +1,8 @@
 import os
 from crewai.tools import BaseTool
-from typing import Type
+from typing import Type, Optional, List
 from pydantic import BaseModel, Field
-
+from invoice_processing_automation_system.fetch_latest_emails import fetch_latest_invoice_attachments
 
 class PDFTextExtractorInput(BaseModel):
     """Input schema for PDFTextExtractor."""
@@ -178,3 +178,48 @@ class ImageTextExtractor(BaseTool):
 
         except Exception as e:
             return f"Error extracting text from image: {str(e)}"
+
+
+class GmailInvoiceFetcherInput(BaseModel):
+    """Input schema for GmailInvoiceFetcher."""
+    max_results: int = Field(
+        default=5,
+        description="Maximum number of latest emails to check."
+    )
+    query: Optional[str] = Field(
+        default="in:inbox is:unread",
+        description=(
+            "Gmail search query to filter emails. "
+            "Default fetches latest unread inbox emails."
+        )
+    )
+    save_dir: str = Field(
+        default="downloaded_attachments",
+        description="Directory where invoice attachments will be saved."
+    )
+
+
+class GmailInvoiceFetcher(BaseTool):
+    name: str = "gmail_invoice_fetcher"
+    description: str = (
+        "Fetches the latest Gmail emails with attachments, filters invoice attachments "
+        "based on filename containing 'invoice', saves them locally, and returns "
+        "a list of saved file paths."
+    )
+    args_schema: Type[BaseModel] = GmailInvoiceFetcherInput
+
+    def _run(
+        self,
+        max_results: int = 5,
+        query: Optional[str] = "in:inbox is:unread",
+        save_dir: str = "downloaded_attachments"
+    ) -> List[str]:
+        try:
+            file_paths = fetch_latest_invoice_attachments(
+                max_results=max_results,
+                query=query,
+                save_dir=save_dir
+            )
+            return file_paths
+        except Exception as e:
+            return [f"Error fetching invoice attachments: {str(e)}"]

@@ -22,3 +22,10 @@ Thumbs.db
 db/
 uv.lock
 Archive.zip
+
+# Gmail Credentials
+token.json
+credentials.json
+
+# Logs
+*.log
