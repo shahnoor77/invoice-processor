@@ -358,7 +358,7 @@ with tab_upload:
         if not result_holder.get("error") and extracted_json:
             sheet_id = os.environ.get("GOOGLE_SHEET_ID")
             if sheet_id:
-                save_invoice(extracted_json, st.session_state.file_name, "PENDING")
+                save_invoice(extracted_json, st.session_state.file_name, "PENDING", user_email="streamlit_user")
 
         st.session_state.phase = "done"
         st.rerun()

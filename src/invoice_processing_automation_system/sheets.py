@@ -1,6 +1,7 @@
 """Google Sheets integration — saves invoice scan history."""
 import json
 import os
+import time
 from datetime import datetime
 
 import gspread
@@ -13,7 +14,17 @@ SCOPES = [
 
 SHEET_NAME = "Invoice History"
 
+# Simple TTL cache — avoids hitting Google Sheets API on every page load
+_cache = {"data": None, "ts": 0}
+CACHE_TTL = 30  # seconds
+
+
+def _invalidate_cache():
+    _cache["data"] = None
+    _cache["ts"] = 0
+
 HEADERS = [
+    "User Email",
     "Timestamp",
     "File Name",
     "Approval Status",
@@ -67,6 +78,14 @@ def _ensure_sheet(spreadsheet: gspread.Spreadsheet) -> gspread.Worksheet:
         ws = spreadsheet.add_worksheet(title=SHEET_NAME, rows=1000, cols=len(HEADERS))
         ws.append_row(HEADERS, value_input_option="RAW")
         ws.format("A1:AJ1", {"textFormat": {"bold": True}})
+    else:
+        ws = spreadsheet.worksheet(SHEET_NAME)
+        # Check if headers match — update if User Email column is missing
+        current_headers = ws.row_values(1)
+        if current_headers and current_headers[0] != "User Email":
+            # Prepend User Email column to existing headers
+            ws.insert_cols([['']], col=1)
+            ws.update_cell(1, 1, "User Email")
     return spreadsheet.worksheet(SHEET_NAME)
 
 
@@ -81,7 +100,7 @@ def _val(d: dict, *keys, default=""):
     return d if d is not None else default
 
 
-def save_invoice(invoice_data: dict, file_name: str, approval_status: str):
+def save_invoice(invoice_data: dict, file_name: str, approval_status: str, user_email: str = ""):
     """Append one row per invoice to the Invoice History sheet."""
     sheet_id = os.environ.get("GOOGLE_SHEET_ID")
     if not sheet_id:
@@ -95,9 +114,10 @@ def save_invoice(invoice_data: dict, file_name: str, approval_status: str):
         r = invoice_data.get("receiver") or {}
 
         row = [
-            datetime.now().strftime("%Y-%m-%d %H:%M:%S"),   # Timestamp
-            file_name,                                        # File Name
-            approval_status,                                  # Approval Status
+            user_email,                                           # User Email
+            datetime.now().strftime("%Y-%m-%d %H:%M:%S"),        # Timestamp
+            file_name,                                            # File Name
+            approval_status,                                      # Approval Status
             _val(invoice_data, "invoice_number"),             # Invoice Number
             _val(invoice_data, "invoice_date"),               # Invoice Date
             _val(invoice_data, "due_date"),                   # Due Date
@@ -133,27 +153,45 @@ def save_invoice(invoice_data: dict, file_name: str, approval_status: str):
         ]
 
         ws.append_row(row, value_input_option="USER_ENTERED")
+        _invalidate_cache()
         return True, None
     except Exception as e:
         return False, str(e)
 
 
-def get_processed_invoices() -> list:
-    """Return all rows from Invoice History sheet."""
+def get_processed_invoices(user_email: str = "") -> list:
+    """Return invoices filtered by user_email. Uses 30s cache to avoid slow Sheet reads."""
     sheet_id = os.environ.get("GOOGLE_SHEET_ID")
     if not sheet_id:
         return []
     try:
-        gc = _get_client()
-        sp = gc.open_by_key(sheet_id)
-        ws = _ensure_sheet(sp)
-        # Use get_all_values to avoid type conversion issues (phones parsed as ints etc.)
-        all_values = ws.get_all_values()
-        if len(all_values) < 2:
-            return []
-        headers = all_values[0]
-        return [dict(zip(headers, row)) for row in all_values[1:]]
-    except Exception:
+        # Use cache if fresh
+        if _cache["data"] is not None and (time.time() - _cache["ts"]) < CACHE_TTL:
+            all_rows = _cache["data"]
+        else:
+            gc = _get_client()
+            sp = gc.open_by_key(sheet_id)
+            ws = _ensure_sheet(sp)
+            all_values = ws.get_all_values()
+            if len(all_values) < 2:
+                return []
+            headers = [h for h in all_values[0] if h.strip()]
+            all_rows = []
+            for idx, row in enumerate(all_values[1:]):
+                row = list(row[:len(headers)])
+                while len(row) < len(headers):
+                    row.append('')
+                d = dict(zip(headers, row))
+                d["_sheet_row"] = idx + 2  # 1-based, +1 for header
+                all_rows.append(d)
+            _cache["data"] = all_rows
+            _cache["ts"] = time.time()
+
+        if user_email:
+            return [r for r in all_rows if r.get("User Email", "") == user_email]
+        return all_rows
+    except Exception as e:
+        print(f"Sheets read error: {e}")
         return []
 
 
@@ -170,6 +208,7 @@ def update_approval_status(row_number: int, status: str):
         headers = ws.row_values(1)
         col_idx = headers.index("Approval Status") + 1  # 1-based
         ws.update_cell(row_number, col_idx, status)
+        _invalidate_cache()
         return True, None
     except Exception as e:
         return False, str(e)

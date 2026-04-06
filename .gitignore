@@ -22,6 +22,11 @@ Thumbs.db
 db/
 uv.lock
 Archive.zip
+*.log
+
+# React
+invoice-ui/node_modules/
+invoice-ui/dist/
 
 # Gmail Credentials
 token.json
