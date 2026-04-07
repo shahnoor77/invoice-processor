@@ -24,9 +24,12 @@ uv.lock
 Archive.zip
 *.log
 
-# React
-invoice-ui/node_modules/
-invoice-ui/dist/
+# React — old UI (replaced by invoiceiq-dash)
+invoice-ui/
+
+# React — new UI (node_modules only)
+invoiceiq-dash/node_modules/
+invoiceiq-dash/dist/
 
 # Gmail Credentials
 token.json
@@ -34,3 +37,8 @@ credentials.json
 
 # Logs
 *.log
+
+invoiceiq-dash/node_modules/
+invoiceiq-dash/dist/
+*.log
+.env
