@@ -30,6 +30,7 @@ invoice-ui/
 # React — new UI (node_modules only)
 invoiceiq-dash/node_modules/
 invoiceiq-dash/dist/
+invoiceiq-dash/.git/
 
 # Gmail Credentials
 token.json

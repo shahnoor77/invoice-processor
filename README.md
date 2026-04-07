@@ -1,92 +1,207 @@
-# Invoice Processing Automation System
+# Automatic Invoice Processor
 
-A multi-agent AI pipeline built with [CrewAI](https://crewai.com) that automatically extracts, validates, and stores structured data from invoice files (PDF, PNG, JPG).
+An AI-powered invoice processing system that automatically fetches invoices from email, extracts structured data using OCR and LLM agents, stores them in a database, and routes approved invoices to ERP systems, Slack, or email.
 
-## What it does
+## Architecture
 
-Upload an invoice → OCR extracts text → agents extract structured data → you approve or reject → approved invoices are saved to Google Sheets.
+```
+Email Inbox (IMAP)
+      ↓ scheduler.py (polls every 1 min per user)
+PostgreSQL DB (processing_jobs)
+      ↓ worker.py (picks up queued jobs)
+OCR + CrewAI Agents (extract invoice data)
+      ↓
+PostgreSQL DB (invoices — status: PENDING)
+      ↓ User approves in UI
+Destinations: ERP Webhook / Slack / Email
+```
 
-**Pipeline (5 agents):**
-1. Document Intake — detects file type, calls OCR tools
-2. Data Extraction — converts raw OCR text into structured JSON (sender, receiver, line items, totals)
-3. Data Validation — verifies math, checks completeness, flags anomalies
-4. ERP Integration — pushes validated data to your ERP system
-5. Finance Notification — notifies the finance team via your chosen channel
+## Tech Stack
 
-**Key features:**
-- Approval/rejection gate before any data reaches ERP
-- Google Sheets history with full invoice data per row
-- Math verification in Python (catches OCR digit misreads)
-- OCR confidence scoring — flags low-quality scans
-- Works with any LLM: Ollama (offline), Groq, OpenAI, Gemini
+- **AI Engine**: CrewAI with 5 agents — intake, extraction, validation, ERP integration, notification
+- **OCR**: Tesseract (images) + pdfplumber (PDFs) + LLaVA vision model (optional)
+- **LLM**: Ollama (offline) or any cloud model via LiteLLM (Groq, OpenAI, Gemini)
+- **Backend**: FastAPI + PostgreSQL (SQLAlchemy)
+- **Frontend**: React + TypeScript + Tailwind + shadcn/ui (`invoiceiq-dash/`)
+- **Email**: IMAP polling with auto-detection of provider settings
 
----
+## Project Structure
+
+```
+├── api.py                  # FastAPI REST API (all endpoints)
+├── auth.py                 # JWT authentication
+├── database.py             # SQLAlchemy engine + session
+├── models.py               # DB models: users, invoices, webhooks, jobs
+├── scheduler.py            # Email poller — runs every 30s, polls per user
+├── worker.py               # Invoice processor — picks up queued jobs
+├── destinations.py         # Routes approved invoices to ERP/Slack/email
+├── jobs.py                 # In-memory job queue (legacy, DB-backed now)
+├── requirements.txt        # Python dependencies
+├── .env.example            # Environment template
+├── Dockerfile              # Docker build
+├── docker-compose.yml      # Docker compose
+├── invoiceiq-dash/         # React frontend (TypeScript + Tailwind)
+│   ├── src/
+│   │   ├── pages/          # Login, Invoices, InvoiceDetail, Settings
+│   │   ├── components/     # UI components (shadcn/ui based)
+│   │   ├── lib/api.ts      # All API calls in one file
+│   │   └── context/        # Auth context
+│   └── vite.config.ts      # Vite config with API proxy
+├── src/invoice_processing_automation_system/
+│   ├── crew.py             # CrewAI agents and tasks
+│   ├── config/
+│   │   ├── agents.yaml     # Agent roles and goals
+│   │   └── tasks.yaml      # Task descriptions
+│   └── tools/
+│       └── custom_tool.py  # PDFTextExtractor, ImageTextExtractor, LLaVA
+└── knowledge/
+    └── user_preference.txt # Few-shot examples for agents
+```
 
 ## Setup
 
 ### Requirements
 - Python 3.10–3.13
 - [uv](https://docs.astral.sh/uv/) package manager
+- PostgreSQL 14+
 - [Tesseract OCR](https://github.com/UB-Mannheim/tesseract/wiki) (Windows) or `apt install tesseract-ocr` (Linux)
-- An Ollama VM or API key for a cloud model
+- Node.js 18+ (for frontend)
+- An Ollama VM or cloud model API key
 
-### Install
+### 1. Clone and install
 
 ```bash
+git clone https://github.com/shahnoor77/automatic-invoice-processor.git
+cd automatic-invoice-processor
 pip install uv
 uv sync
 ```
 
-### Configure
+### 2. Create PostgreSQL database
+
+In pgAdmin or psql:
+```sql
+CREATE DATABASE invoice_db;
+```
+
+### 3. Configure environment
 
 ```bash
 cp .env.example .env
 ```
 
+Edit `.env`:
+
 | Variable | Description |
 |---|---|
-| `MODEL` | Model to use — see `.env.example` for options |
-| `OLLAMA_BASE_URL` | URL of your Ollama VM (if using offline model) |
-| `MODEL_API_KEY` | API key for cloud models (Groq/OpenAI/Gemini) |
-| `GOOGLE_CREDENTIALS_FILE` | Path to your Google service account JSON |
-| `GOOGLE_SHEET_ID` | ID from your Google Sheet URL |
+| `DATABASE_URL` | `postgresql://postgres:password@localhost:5432/invoice_db` |
+| `MODEL` | LLM to use — see options below |
+| `OLLAMA_BASE_URL` | URL of your Ollama server (if using offline model) |
+| `MODEL_API_KEY` | API key for cloud models |
+| `GOOGLE_CREDENTIALS_FILE` | Path to Google service account JSON (optional, for Sheets export) |
+| `GOOGLE_SHEET_ID` | Google Sheet ID (optional) |
+| `SMTP_USER` | Gmail address for email notifications |
+| `SMTP_PASSWORD` | Gmail App Password |
+| `JWT_SECRET_KEY` | Random secret for JWT tokens |
 
-For Google Sheets: place your service account JSON in the project root and share the sheet with the service account email as Editor.
-
-### Run
+### 4. Run the API
 
 ```bash
-uv run streamlit run app.py
+uv run uvicorn api:app --reload --port 8000
 ```
 
-Open `http://localhost:8501`
+Tables are created automatically on first startup. API docs at `http://localhost:8000/docs`.
+
+### 5. Run the frontend
+
+```bash
+cd invoiceiq-dash
+npm install
+npm run dev
+```
+
+Open `http://localhost:8080`
 
 ---
 
-## Switching models
+## Switching LLM Models
 
 Change `MODEL` in `.env` — no code changes needed:
 
 ```bash
-MODEL=ollama/qwen3.5:9b              # offline, recommended
-MODEL=ollama/llama3.1:8b             # offline, faster
-MODEL=groq/llama-3.3-70b-versatile   # Groq free tier
-MODEL=gemini/gemini-1.5-flash        # Google free tier
-MODEL=openai/gpt-4o-mini             # OpenAI
+# Offline (Ollama)
+MODEL=ollama/qwen3.5:9b          # recommended accuracy
+MODEL=ollama/llama3.1:8b         # faster
+
+# Cloud (free tiers)
+MODEL=groq/llama-3.3-70b-versatile
+MODEL=gemini/gemini-2.0-flash
+MODEL=openai/gpt-4o-mini
 ```
 
 ---
 
-## Docker (production)
+## How It Works
+
+### Automatic Email Processing
+1. User configures their email in Settings (Gmail/Outlook/Yahoo — just email + password)
+2. Scheduler polls their inbox every minute for new emails with PDF/image attachments
+3. Attachments are downloaded and queued as `ProcessingJob` records
+4. Worker picks up queued jobs, runs OCR + AI crew, saves extracted data as `PENDING` invoice
+
+### Manual Upload
+1. User uploads a PDF/PNG/JPG via the UI
+2. Same processing pipeline runs asynchronously
+3. Result appears in the Invoices list as `PENDING`
+
+### Approval Flow
+1. User reviews extracted invoice data in the UI
+2. Clicks Approve → invoice status updates to `APPROVED`
+3. System routes to all configured destinations simultaneously:
+   - ERP webhook (POST JSON)
+   - Slack (formatted message)
+   - Email notification (SMTP)
+4. Reject → status updates to `REJECTED` with reason logged
+
+---
+
+## API Endpoints
+
+| Method | Endpoint | Description |
+|---|---|---|
+| POST | `/auth/register` | Create account |
+| POST | `/auth/login` | Login, get JWT token |
+| GET | `/invoices` | List user's invoices |
+| GET | `/invoices/{id}` | Get invoice detail |
+| POST | `/invoices/upload` | Upload invoice file |
+| GET | `/invoices/jobs/{id}` | Poll processing job status |
+| PATCH | `/invoices/{id}/approve` | Approve + route to destinations |
+| PATCH | `/invoices/{id}/reject` | Reject with reason |
+| GET | `/settings/email` | Get email config |
+| PUT | `/settings/email` | Save email config |
+| POST | `/settings/email/test` | Test IMAP connection |
+| POST | `/settings/email/poll-now` | Trigger immediate email poll |
+| GET | `/settings/webhooks` | List webhooks |
+| POST | `/settings/webhooks` | Create webhook |
+| PUT | `/settings/webhooks/{id}` | Update webhook |
+| DELETE | `/settings/webhooks/{id}` | Delete webhook |
+| POST | `/settings/webhooks/{id}/test` | Test webhook |
+| GET | `/health` | System health check |
+
+Full interactive docs: `http://localhost:8000/docs`
+
+---
+
+## Docker (Production)
 
 ```bash
-docker build -t invoice-app .
+docker build -t invoice-processor .
 docker compose up
 ```
 
-For Docker to reach an Ollama VM, the VM must bind to `0.0.0.0:11434`:
+For Ollama VM access from Docker, bind Ollama to `0.0.0.0`:
 ```bash
-# On the VM
+# On the Ollama VM
 sudo systemctl edit ollama
 # Add: Environment="OLLAMA_HOST=0.0.0.0:11434"
 sudo systemctl restart ollama
@@ -94,129 +209,22 @@ sudo systemctl restart ollama
 
 ---
 
-## Known limitations & improvement opportunities
-
-Each stage below notes what the current approach does, where it falls short, and what a better approach would be.
-
-### Stage 1 — OCR (image/PDF text extraction)
-
-**Current:** Tesseract OCR with preprocessing (grayscale, upscale to 1500px, sharpen ×3, adaptive binarization).
-
-**Limitations:**
-- Tesseract misreads similar digits (`5`→`8`, `0`→`6`) on certain fonts and low-res scans
-- Table structure is lost — line items come out as flat text, making extraction harder
-- Handwritten invoices are not supported
-
-**Better approach:**
-- Use a vision-capable LLM (GPT-4o, Gemini 1.5 Pro, Claude 3.5) — pass the image directly, skip Tesseract entirely. These models read tables, handwriting, and mixed layouts natively with near-zero digit errors.
-- For offline: [Surya OCR](https://github.com/VikParuchuri/surya) or [PaddleOCR](https://github.com/PaddlePaddle/PaddleOCR) are significantly more accurate than Tesseract for invoices, especially for tables.
-
----
-
-### Stage 2 — Data extraction
-
-**Current:** Single agent receives raw OCR text and outputs JSON at `temperature=0`. Few-shot example in `knowledge/user_preference.txt`.
-
-**Limitations:**
-- Small models (7–9B) occasionally merge sender/receiver or misplace values when OCR text layout is unusual
-- `qwen3.5:9b` is the best available offline option but still ~5% error rate on complex invoices
-- JSON parsing relies on regex fallback when model adds extra text around the JSON
-
-**Better approach:**
-- Vision LLMs eliminate the OCR→text→JSON chain entirely — one call, image in, JSON out
-- `gpt-4o-mini` or `claude-3-5-haiku` reduce error rate to <1% on structured extraction
-- Use structured output / function calling (OpenAI, Anthropic, Gemini all support this natively) — guarantees valid JSON schema, no regex parsing needed
-- For offline: `qwen2.5:14b` or `mistral-nemo:12b` are meaningfully better than 9B models for JSON extraction
-
----
-
-### Stage 3 — Math validation
-
-**Current:** Python-side verification after extraction — checks line item totals, subtotal, and grand total. Flags mismatches as warnings.
-
-**Limitations:**
-- Only catches arithmetic errors, not semantic errors (e.g. wrong tax rate applied)
-- Does not auto-correct — human must review warnings manually
-
-**Better approach:**
-- This stage is already well-implemented in Python and doesn't need a better model
-- Could add currency conversion validation and vendor database lookup for known vendors
-
----
-
-### Stage 4 — ERP integration
-
-**Current:** Agent reports integration status. Actual ERP push is a placeholder (Google Sheets append via `google_sheets/append_values` app).
-
-**Limitations:**
-- No real ERP API integration implemented yet
-- No retry logic for failed pushes
-- No duplicate detection (same invoice pushed twice)
-
-**Better approach:**
-- Implement direct API calls to SAP, QuickBooks, NetSuite, or Xero using their REST APIs
-- Add invoice hash-based deduplication before pushing
-- This stage doesn't need a better LLM — it needs real API integration code
-
----
-
-### Stage 5 — Notifications
-
-**Current:** Agent sends a notification summary via the configured channel. Uses `google_gmail/send_email` app.
-
-**Limitations:**
-- Notification language is overly dramatic for minor issues (flags missing optional fields as "CRITICAL")
-- No Slack/Teams integration
-- Email sending requires Gmail OAuth setup
-
-**Better approach:**
-- Replace the LLM agent with a simple Python template — notifications don't need AI
-- Add Slack webhook support (one `requests.post` call, no auth needed)
-- Separate blocking issues from warnings in the notification
-
----
-
-### Overall architecture
-
-**Current:** Sequential 5-agent CrewAI pipeline. OCR runs in Python before the crew to avoid context pollution.
-
-**Simplification with better models:**
-If using GPT-4o or Gemini 1.5 Pro, the entire pipeline collapses to 2 steps:
-1. Vision model: image → structured JSON (replaces OCR + extraction + layout analysis)
-2. Python: validate math, save to Sheets, send notification
-
-The multi-agent approach adds value when using small offline models that need task decomposition. With frontier models, it adds latency and complexity without accuracy benefit.
-
----
-
-## Project structure
-
-```
-├── app.py                          # Streamlit UI
-├── Dockerfile                      # Docker build
-├── docker-compose.yml              # Docker compose
-├── .env.example                    # Environment template (copy to .env)
-├── requirements.txt                # Python dependencies
-├── google_credentials.json         # Google service account (not committed — get from project owner)
-├── knowledge/
-│   └── user_preference.txt         # Few-shot examples for agents
-└── src/invoice_processing_automation_system/
-    ├── crew.py                     # Agent and task definitions
-    ├── sheets.py                   # Google Sheets integration
-    ├── email_fetcher.py            # IMAP email fetcher (future use)
-    ├── config/
-    │   ├── agents.yaml             # Agent roles and goals
-    │   └── tasks.yaml              # Task descriptions and expected outputs
-    └── tools/
-        └── custom_tool.py          # PDFTextExtractor, ImageTextExtractor (Tesseract)
-```
-
----
-
-## For your team
+## For Team Members
 
 1. Clone the repo
-2. Copy `.env.example` → `.env` and fill in values
-3. Get `google_credentials.json` from the project owner (not in repo — share via secure channel)
-4. Install Tesseract: [Windows installer](https://github.com/UB-Mannheim/tesseract/wiki) or `apt install tesseract-ocr` on Linux
-5. Run `uv sync` then `uv run streamlit run app.py`
+2. Install PostgreSQL locally, create `invoice_db`
+3. Copy `.env.example` → `.env`, fill in your DB password and model config
+4. Get `google_credentials.json` from project owner if needed (not in repo)
+5. Install Tesseract OCR
+6. Run `uv sync` then `uv run uvicorn api:app --reload --port 8000`
+7. In another terminal: `cd invoiceiq-dash && npm install && npm run dev`
+
+---
+
+## Known Limitations & Improvement Opportunities
+
+- **Auth is JWT only** — no OAuth, no password reset. Replace with a proper auth service for production.
+- **OCR accuracy** — Tesseract misreads digits on low-quality scans. Use GPT-4o vision or Gemini for near-perfect extraction.
+- **In-memory job queue** — `jobs.py` is legacy. All jobs now use the DB but the old in-memory dict is still imported. Clean up when stable.
+- **No duplicate detection** — same invoice can be processed twice if emailed again. Add hash-based dedup.
+- **Webhook retry** — failed webhooks are logged but not retried. Add retry logic for production.
