@@ -14,7 +14,14 @@ DATABASE_URL = os.environ.get(
 # PostgreSQL needs pool settings; SQLite doesn't support them
 connect_args = {"check_same_thread": False} if DATABASE_URL.startswith("sqlite") else {}
 
-engine = create_engine(DATABASE_URL, connect_args=connect_args, pool_pre_ping=True)
+engine = create_engine(
+    DATABASE_URL,
+    connect_args=connect_args,
+    pool_pre_ping=True,       # test connection before use
+    pool_recycle=300,         # recycle connections every 5 min
+    pool_size=10,             # connection pool size
+    max_overflow=20,          # extra connections allowed
+)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 

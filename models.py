@@ -113,46 +113,83 @@ class Invoice(Base):
 
     # Source
     file_name: Mapped[Optional[str]] = mapped_column(String, nullable=True)
-    source: Mapped[str] = mapped_column(String, default="upload")  # upload | email
+    source: Mapped[str] = mapped_column(String, default="upload")
 
     # Invoice fields
     invoice_number: Mapped[Optional[str]] = mapped_column(String, nullable=True, index=True)
     invoice_date: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     due_date: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    delivery_date: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     payment_terms: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    payment_method: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     purchase_order: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    reference: Mapped[Optional[str]] = mapped_column(String, nullable=True)
 
-    # Sender (vendor)
+    # Sender (vendor/seller/issuer)
     sender_name: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     sender_address: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     sender_city: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    sender_state: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    sender_zip: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     sender_country: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     sender_email: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     sender_phone: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    sender_website: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     sender_tax_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    sender_vat_number: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    sender_registration: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    # Sender bank details
+    sender_bank_name: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    sender_bank_account_holder: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    sender_bank_account_number: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    sender_bank_iban: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    sender_bank_swift: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    sender_bank_routing: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    sender_bank_sort_code: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    sender_bank_branch: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    sender_bank_address: Mapped[Optional[str]] = mapped_column(String, nullable=True)
 
-    # Receiver (bill-to)
+    # Receiver (buyer/client/bill-to)
     receiver_name: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     receiver_address: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     receiver_city: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    receiver_state: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    receiver_zip: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     receiver_country: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     receiver_email: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     receiver_phone: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    receiver_tax_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    receiver_vat_number: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    # Receiver bank details
+    receiver_bank_name: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    receiver_bank_account_holder: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    receiver_bank_account_number: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    receiver_bank_iban: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    receiver_bank_swift: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    receiver_bank_routing: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    receiver_bank_sort_code: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    receiver_bank_branch: Mapped[Optional[str]] = mapped_column(String, nullable=True)
 
     # Financials
     currency: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    exchange_rate: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     subtotal: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     discount_total: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    discount_percent: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     tax_rate: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     tax_amount: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    tax_type: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     shipping: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    handling: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    other_charges: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     total_amount: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     amount_paid: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     amount_due: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    deposit: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
 
     # Extra
     notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    bank_details: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    terms_and_conditions: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     ocr_confidence: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     full_json: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
 
@@ -201,12 +238,32 @@ class ProcessingJob(Base):
     email_subject: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     email_sender: Mapped[Optional[str]] = mapped_column(String, nullable=True)
 
-    status: Mapped[str] = mapped_column(String, default="queued", index=True)  # queued | processing | done | failed
+    status: Mapped[str] = mapped_column(String, default="queued", index=True)
     error_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    retry_count: Mapped[int] = mapped_column(Integer, default=0)
     invoice_id: Mapped[Optional[str]] = mapped_column(String, ForeignKey("invoices.id"), nullable=True)
+    # Store email message ID so we can re-download attachment if temp file is lost
+    email_message_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
     started_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
 
     user: Mapped["User"] = relationship("User", back_populates="jobs")
+
+
+# ── User Model Config ─────────────────────────────────────────────────────────
+
+class UserModelConfig(Base):
+    __tablename__ = "user_model_configs"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=new_uuid)
+    user_id: Mapped[str] = mapped_column(String, ForeignKey("users.id"), nullable=False, unique=True)
+
+    # LLM settings — if null, system defaults from .env are used
+    model_name: Mapped[Optional[str]] = mapped_column(String, nullable=True)   # e.g. "ollama/qwen3.5:9b"
+    api_key: Mapped[Optional[str]] = mapped_column(String, nullable=True)       # encrypted in prod
+    base_url: Mapped[Optional[str]] = mapped_column(String, nullable=True)      # for custom Ollama endpoints
+
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

@@ -1,88 +1,114 @@
 ## Invoice Processing Rules
 
-ACCURACY RULES (strictly follow these):
-- INVOICE NUMBER is the most critical field. Search for: INV-, #, No., Number, Invoice No, Ref, Reference.
-  Copy EXACTLY including prefix. If you see any alphanumeric reference on the invoice, that is the invoice number.
-  NEVER return null for invoice_number if any reference number exists anywhere in the text.
-- Never fabricate, guess, or infer any invoice field value
-- If a value is not clearly present in the extracted text, set it to null
-- Dates must always be in YYYY-MM-DD format
-- Amounts must always be numeric (no currency symbols in numeric fields)
-- Currency goes in the "currency" field as ISO code (USD, EUR, GBP, PKR, etc.)
-- ALWAYS separate sender and receiver — never merge them into one object
-  - sender = who issued/sent the invoice (vendor, supplier, from address, company letterhead)
-  - receiver = who receives/pays the invoice (client, bill-to, ship-to address)
-- For addresses: extract street address, city, and country into SEPARATE fields
+### SENDER IDENTIFICATION (vendor/seller/issuer/host)
+The sender is the party who CREATED and SENT the invoice. They are OWED money.
+Look for these labels: FROM, VENDOR, SELLER, SUPPLIER, BILLED BY, INVOICE FROM,
+PAYABLE TO, REMIT TO, company letterhead/logo at top of page, "We are pleased to invoice",
+"Please remit payment to", BANK DETAILS (usually belongs to sender).
 
-## Example of correct extraction
+### RECEIVER IDENTIFICATION (buyer/client/customer)
+The receiver is the party who RECEIVES the invoice and PAYS it.
+Look for these labels: TO, BILL TO, SHIP TO, CLIENT, CUSTOMER, BUYER, SOLD TO,
+INVOICE TO, ATTENTION, "Invoice for services rendered to".
+
+### CRITICAL RULES
+- NEVER merge sender and receiver — they are always separate entities
+- If only one party name appears, it is the SENDER
+- Bank details on an invoice almost always belong to the SENDER (where to send payment)
+- The receiver's bank details are rarely on invoices but extract if present
+
+### BANK DETAILS EXTRACTION
+Extract ALL banking information found:
+- bank_name: name of the bank
+- account_holder: name on the account
+- account_number: account number
+- iban: IBAN number (format: XX00 0000 0000...)
+- swift_bic: SWIFT or BIC code
+- routing_number: ABA routing number (US)
+- sort_code: sort code (UK)
+- branch: branch name or number
+
+### FINANCIAL FIELDS
+Extract ALL financial values found:
+- subtotal: sum before tax/discount
+- discount_total: total discount amount
+- discount_percent: discount percentage
+- tax_rate: tax percentage
+- tax_amount: tax amount
+- tax_type: VAT, GST, HST, Sales Tax, etc.
+- shipping: shipping/delivery charges
+- handling: handling fees
+- other_charges: any other fees
+- total_amount: grand total
+- amount_paid: already paid
+- amount_due: remaining balance
+- deposit: deposit amount
+
+### EXAMPLE — Correct extraction
 
 OCR text:
-  FROM: Acme Corp, 123 Supplier St, New York, USA | Tel: +1-555-0100 | acme@acme.com
-  TO: Beta Ltd, 456 Client Ave, London, UK | Tel: +44-20-0200
+  INVOICE FLY                          Invoice #: INV-2024-042
+  123 Seller St, New York, USA         Date: 2024-03-15
+  Tel: +1-555-0100                     Due: 2024-04-15
+  Email: billing@invoicefly.com
+  Tax ID: US-TAX-12345
+  
+  BILL TO:
+  Elon Musk / Tesla Inc
+  456 Buyer Ave, Austin, TX
+  Tel: +1-555-0200
+  
+  Services: Web Design    1 x $5,000.00 = $5,000.00
+  
+  Subtotal: $5,000.00
+  Discount (10%): -$500.00
+  Tax (8%): $360.00
+  Total: $4,860.00
+  Amount Due: $4,860.00
+  
+  PAYMENT DETAILS:
+  Bank: First National Bank
+  Account: INVOICE FLY LLC
+  Account No: 1234567890
+  IBAN: US12 3456 7890 1234
+  SWIFT: FNBKUS33
 
-  INVOICE #INV-2024-0042
-  Date: 15 March 2024  |  Due: 15 April 2024
-  PO: PO-9876  |  Terms: Net 30
-
-  Item: Web Design Services  Qty: 1  Unit: service  Price: $1,500.00  Total: $1,500.00
-  Item: Hosting Setup        Qty: 2  Unit: month    Price: $100.00   Total: $200.00
-
-  Subtotal: $1,700.00
-  Discount: $0.00
-  Tax (10%): $170.00
-  Shipping: $0.00
-  TOTAL: $1,870.00
-  Amount Paid: $0.00
-  Amount Due: $1,870.00
-
-  Bank: IBAN XX00 0000 0000 | SWIFT: ACMEUSXX
-  Notes: Please pay within 30 days.
-
-Correct JSON output:
+Correct JSON:
 {
   "sender": {
-    "name": "Acme Corp",
-    "address": "123 Supplier St",
+    "name": "INVOICE FLY",
+    "address": "123 Seller St",
     "city": "New York",
     "country": "USA",
     "phone": "+1-555-0100",
-    "email": "acme@acme.com",
-    "tax_id": null,
-    "website": null
+    "email": "billing@invoicefly.com",
+    "tax_id": "US-TAX-12345",
+    "bank": {
+      "bank_name": "First National Bank",
+      "account_holder": "INVOICE FLY LLC",
+      "account_number": "1234567890",
+      "iban": "US12 3456 7890 1234",
+      "swift_bic": "FNBKUS33"
+    }
   },
   "receiver": {
-    "name": "Beta Ltd",
-    "address": "456 Client Ave",
-    "city": "London",
-    "country": "UK",
-    "phone": "+44-20-0200",
-    "email": null,
-    "tax_id": null
+    "name": "Elon Musk / Tesla Inc",
+    "address": "456 Buyer Ave",
+    "city": "Austin",
+    "state": "TX",
+    "phone": "+1-555-0200",
+    "bank": {}
   },
-  "invoice_number": "INV-2024-0042",
+  "invoice_number": "INV-2024-042",
   "invoice_date": "2024-03-15",
   "due_date": "2024-04-15",
-  "purchase_order": "PO-9876",
-  "payment_terms": "Net 30",
-  "line_items": [
-    {"description": "Web Design Services", "quantity": 1, "unit": "service", "unit_price": 1500.00, "discount": 0.00, "total": 1500.00},
-    {"description": "Hosting Setup", "quantity": 2, "unit": "month", "unit_price": 100.00, "discount": 0.00, "total": 200.00}
-  ],
-  "subtotal": 1700.00,
-  "discount_total": 0.00,
-  "tax_rate": 10.00,
-  "tax_amount": 170.00,
-  "shipping": 0.00,
-  "total_amount": 1870.00,
-  "amount_paid": 0.00,
-  "amount_due": 1870.00,
+  "subtotal": 5000.00,
+  "discount_total": 500.00,
+  "discount_percent": 10.0,
+  "tax_rate": 8.0,
+  "tax_amount": 360.00,
+  "total_amount": 4860.00,
+  "amount_due": 4860.00,
   "currency": "USD",
-  "notes": "Please pay within 30 days.",
-  "bank_details": "IBAN XX00 0000 0000 | SWIFT: ACMEUSXX",
   "confidence": "HIGH"
 }
-
-## Handling low quality / blurry invoices
-If OCR confidence is LOW, still extract what you can but mark confidence as "LOW":
-- Set fields you cannot read clearly to null
-- Never guess amounts or names

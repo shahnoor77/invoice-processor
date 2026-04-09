@@ -24,7 +24,7 @@ from dotenv import load_dotenv
 load_dotenv(override=True)
 
 from database import get_db, init_db
-from models import EmailConfig, Invoice, InvoiceLineItem, ProcessingJob, User, Webhook
+from models import EmailConfig, Invoice, InvoiceLineItem, ProcessingJob, User, Webhook, UserModelConfig
 from destinations import route_approved_invoice
 from invoice_processing_automation_system.tools.custom_tool import (
     PDFTextExtractor, ImageTextExtractor, extract_image_with_llava
@@ -307,6 +307,56 @@ def test_webhook(webhook_id: str, user: User = Depends(get_current_user), db: Se
         return {"success": False, "message": str(e)}
 
 
+# ── Model Config endpoints ────────────────────────────────────────────────────
+
+class ModelConfigIn(BaseModel):
+    model_name: Optional[str] = None
+    api_key: Optional[str] = None
+    base_url: Optional[str] = None
+
+
+@app.get("/settings/model", tags=["Settings"])
+def get_model_config(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    cfg = db.query(UserModelConfig).filter(UserModelConfig.user_id == user.id).first()
+    default_model = os.environ.get("MODEL", "ollama/qwen3.5:9b")
+    default_base_url = os.environ.get("OLLAMA_BASE_URL", "")
+    if not cfg:
+        return {"model_name": None, "api_key": None, "base_url": None,
+                "effective_model": default_model, "effective_base_url": default_base_url}
+    return {
+        "model_name": cfg.model_name,
+        "api_key": "***" if cfg.api_key else None,  # mask key
+        "base_url": cfg.base_url,
+        "effective_model": cfg.model_name or default_model,
+        "effective_base_url": cfg.base_url or default_base_url,
+    }
+
+
+@app.put("/settings/model", tags=["Settings"])
+def save_model_config(data: ModelConfigIn, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    cfg = db.query(UserModelConfig).filter(UserModelConfig.user_id == user.id).first()
+    if cfg:
+        if data.model_name is not None: cfg.model_name = data.model_name or None
+        if data.api_key is not None: cfg.api_key = data.api_key or None
+        if data.base_url is not None: cfg.base_url = data.base_url or None
+    else:
+        cfg = UserModelConfig(user_id=user.id, model_name=data.model_name or None,
+                              api_key=data.api_key or None, base_url=data.base_url or None)
+        db.add(cfg)
+    db.commit()
+    return {"message": "Model config saved"}
+
+
+@app.delete("/settings/model", tags=["Settings"])
+def reset_model_config(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """Reset to system defaults."""
+    cfg = db.query(UserModelConfig).filter(UserModelConfig.user_id == user.id).first()
+    if cfg:
+        db.delete(cfg)
+        db.commit()
+    return {"message": "Reset to system defaults"}
+
+
 # ── Invoice endpoints ─────────────────────────────────────────────────────────
 
 def _invoice_to_dict(inv: Invoice) -> dict:
@@ -349,17 +399,32 @@ def approve_invoice(invoice_id: str, user: User = Depends(get_current_user), db:
 
     # Route to all configured webhooks — detect Slack vs ERP by URL
     webhooks = db.query(Webhook).filter(Webhook.user_id == user.id, Webhook.is_active == True).all()
-    erp_urls = []
+    erp_webhooks = []
     slack_urls = []
+    notification_emails = []
+
     for w in webhooks:
         if "hooks.slack.com" in w.url or "slack.com/services" in w.url:
             slack_urls.append(w.url)
         else:
-            erp_urls.append(w.url)
+            # Pass full webhook config so auth/headers/template are applied
+            erp_webhooks.append({
+                "url": w.url,
+                "method": w.method or "POST",
+                "auth_type": w.auth_type or "None",
+                "auth_credentials": w.auth_credentials or {},
+                "content_type": w.content_type or "application/json",
+                "custom_headers": w.custom_headers or {},
+                "payload_template": w.payload_template,
+                "timeout_seconds": w.timeout_seconds or 30,
+            })
 
+    # Get notification emails from user settings (stored in user_model_configs or a future settings table)
+    # For now, check if any webhook URL looks like an email
     routing = route_approved_invoice(
         inv.full_json or {},
-        {"erp_webhooks": erp_urls, "slack_webhooks": slack_urls, "notification_emails": []}
+        {"erp_webhooks": erp_webhooks, "slack_webhooks": slack_urls, "notification_emails": notification_emails},
+        approved_by=user.name,
     )
     return {"status": "approved", "routing": routing}
 

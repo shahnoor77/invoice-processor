@@ -1,118 +1,136 @@
 # Automatic Invoice Processor
 
-An AI-powered invoice processing system that automatically fetches invoices from email, extracts structured data using OCR and LLM agents, stores them in a database, and routes approved invoices to ERP systems, Slack, or email.
+An AI-powered invoice processing system that automatically fetches invoices from email, extracts structured data using OCR and LLM agents, stores them in PostgreSQL, and routes approved invoices to ERP systems, Slack, or email.
 
-## Architecture
+---
+
+## How It Works
 
 ```
-Email Inbox (IMAP)
-      ↓ scheduler.py (polls every 1 min per user)
-PostgreSQL DB (processing_jobs)
-      ↓ worker.py (picks up queued jobs)
-OCR + CrewAI Agents (extract invoice data)
-      ↓
-PostgreSQL DB (invoices — status: PENDING)
-      ↓ User approves in UI
-Destinations: ERP Webhook / Slack / Email
+Email Inbox (IMAP — any provider)
+      ↓ scheduler.py polls every 1 min per user (parallel threads)
+PostgreSQL DB → processing_jobs (status: queued)
+      ↓ worker.py picks up jobs (parallel OCR + per-user AI lock)
+OCR (Tesseract / LLaVA vision) → AI Crew (5 agents)
+      ↓ Extracts: sender, receiver, bank details, line items, financials
+PostgreSQL DB → invoices (status: PENDING)
+      ↓ User reviews in UI → Approve / Reject
+Destinations (parallel): ERP Webhook + Slack + Email
 ```
+
+---
 
 ## Tech Stack
 
-- **AI Engine**: CrewAI with 5 agents — intake, extraction, validation, ERP integration, notification
-- **OCR**: Tesseract (images) + pdfplumber (PDFs) + LLaVA vision model (optional)
-- **LLM**: Ollama (offline) or any cloud model via LiteLLM (Groq, OpenAI, Gemini)
-- **Backend**: FastAPI + PostgreSQL (SQLAlchemy)
-- **Frontend**: React + TypeScript + Tailwind + shadcn/ui (`invoiceiq-dash/`)
-- **Email**: IMAP polling with auto-detection of provider settings
+| Layer | Technology |
+|---|---|
+| AI Engine | CrewAI — 5 agents (intake, extraction, validation, ERP, notification) |
+| OCR | Tesseract (images) + pdfplumber (PDFs) + LLaVA vision model |
+| LLM | Ollama (offline) or any cloud model via LiteLLM |
+| Backend | FastAPI + PostgreSQL (SQLAlchemy) |
+| Frontend | React + TypeScript + Tailwind + shadcn/ui |
+| Email | IMAP polling — auto-detects provider settings |
+| Threading | Parallel email polling, parallel OCR, parallel destination routing |
+
+---
 
 ## Project Structure
 
 ```
-├── api.py                  # FastAPI REST API (all endpoints)
+├── api.py                  # FastAPI REST API — all endpoints
 ├── auth.py                 # JWT authentication
-├── database.py             # SQLAlchemy engine + session
-├── models.py               # DB models: users, invoices, webhooks, jobs
-├── scheduler.py            # Email poller — runs every 30s, polls per user
-├── worker.py               # Invoice processor — picks up queued jobs
-├── destinations.py         # Routes approved invoices to ERP/Slack/email
-├── jobs.py                 # In-memory job queue (legacy, DB-backed now)
+├── database.py             # SQLAlchemy engine + session factory
+├── models.py               # DB models: users, invoices, webhooks, jobs, email_configs
+├── scheduler.py            # Email poller — runs every 30s, polls per user in parallel
+├── worker.py               # Invoice processor — parallel OCR, per-user AI lock, retry logic
+├── destinations.py         # Routes approved invoices to ERP/Slack/email in parallel
+├── db_setup.py             # Database management script
+├── jobs.py                 # Legacy job queue (kept for compatibility)
 ├── requirements.txt        # Python dependencies
 ├── .env.example            # Environment template
-├── Dockerfile              # Docker build
-├── docker-compose.yml      # Docker compose
-├── invoiceiq-dash/         # React frontend (TypeScript + Tailwind)
+├── Dockerfile              # Multi-stage: React build + Python backend
+├── docker-compose.yml      # Full stack: API + PostgreSQL + nginx
+├── nginx.conf              # Reverse proxy: serves React + proxies /api/* to FastAPI
+├── invoiceiq-dash/         # React frontend (TypeScript + Tailwind + shadcn/ui)
 │   ├── src/
 │   │   ├── pages/          # Login, Invoices, InvoiceDetail, Settings
-│   │   ├── components/     # UI components (shadcn/ui based)
-│   │   ├── lib/api.ts      # All API calls in one file
+│   │   ├── components/     # UI components, settings forms
+│   │   ├── lib/api.ts      # All API calls
 │   │   └── context/        # Auth context
-│   └── vite.config.ts      # Vite config with API proxy
-├── src/invoice_processing_automation_system/
-│   ├── crew.py             # CrewAI agents and tasks
-│   ├── config/
-│   │   ├── agents.yaml     # Agent roles and goals
-│   │   └── tasks.yaml      # Task descriptions
-│   └── tools/
-│       └── custom_tool.py  # PDFTextExtractor, ImageTextExtractor, LLaVA
-└── knowledge/
-    └── user_preference.txt # Few-shot examples for agents
+│   └── vite.config.ts
+└── src/invoice_processing_automation_system/
+    ├── crew.py             # CrewAI agents and tasks
+    ├── config/
+    │   ├── agents.yaml
+    │   └── tasks.yaml      # Comprehensive extraction prompt
+    └── tools/
+        └── custom_tool.py  # PDFTextExtractor, ImageTextExtractor, LLaVA
 ```
 
-## Setup
+---
+
+## Local Setup (Development)
 
 ### Requirements
-- Python 3.10–3.13
-- [uv](https://docs.astral.sh/uv/) package manager
-- PostgreSQL 14+
+- Python 3.10–3.13 + [uv](https://docs.astral.sh/uv/)
+- PostgreSQL 14+ (or Docker)
 - [Tesseract OCR](https://github.com/UB-Mannheim/tesseract/wiki) (Windows) or `apt install tesseract-ocr` (Linux)
-- Node.js 18+ (for frontend)
-- An Ollama VM or cloud model API key
+- Node.js 18+
+- Ollama server or cloud model API key
 
 ### 1. Clone and install
 
 ```bash
-git clone https://github.com/shahnoor77/automatic-invoice-processor.git
-cd automatic-invoice-processor
+git clone https://github.com/shahnoor77/invoice-processor.git
+cd invoice-processor
 pip install uv
 uv sync
 ```
 
-### 2. Create PostgreSQL database
+### 2. Create database
 
-In pgAdmin or psql:
-```sql
-CREATE DATABASE invoice_db;
+```bash
+# Option A — script creates it
+python db_setup.py create-db
+
+# Option B — manually in pgAdmin
+# CREATE DATABASE invoice_db;
 ```
 
-### 3. Configure environment
+### 3. Set up tables
+
+```bash
+python db_setup.py setup
+```
+
+### 4. Configure environment
 
 ```bash
 cp .env.example .env
 ```
 
-Edit `.env`:
+Key variables:
 
 | Variable | Description |
 |---|---|
 | `DATABASE_URL` | `postgresql://postgres:password@localhost:5432/invoice_db` |
-| `MODEL` | LLM to use — see options below |
-| `OLLAMA_BASE_URL` | URL of your Ollama server (if using offline model) |
+| `MODEL` | LLM to use (see options below) |
+| `OLLAMA_BASE_URL` | Your Ollama server URL |
 | `MODEL_API_KEY` | API key for cloud models |
-| `GOOGLE_CREDENTIALS_FILE` | Path to Google service account JSON (optional, for Sheets export) |
-| `GOOGLE_SHEET_ID` | Google Sheet ID (optional) |
-| `SMTP_USER` | Gmail address for email notifications |
-| `SMTP_PASSWORD` | Gmail App Password |
 | `JWT_SECRET_KEY` | Random secret for JWT tokens |
+| `SMTP_USER` | Gmail for email notifications |
+| `SMTP_PASSWORD` | Gmail App Password |
+| `GOOGLE_SHEET_ID` | Optional Google Sheets export |
 
-### 4. Run the API
+### 5. Run the API
 
 ```bash
-uv run uvicorn api:app --reload --port 8000
+uv run uvicorn api:app --host 0.0.0.0 --port 8000 --reload --reload-exclude ".venv"
 ```
 
-Tables are created automatically on first startup. API docs at `http://localhost:8000/docs`.
+Tables auto-create on first startup. API docs: `http://localhost:8000/docs`
 
-### 5. Run the frontend
+### 6. Run the frontend
 
 ```bash
 cd invoiceiq-dash
@@ -126,42 +144,55 @@ Open `http://localhost:8080`
 
 ## Switching LLM Models
 
-Change `MODEL` in `.env` — no code changes needed:
+Change `MODEL` in `.env`:
 
 ```bash
-# Offline (Ollama)
-MODEL=ollama/qwen3.5:9b          # recommended accuracy
-MODEL=ollama/llama3.1:8b         # faster
-
-# Cloud (free tiers)
-MODEL=groq/llama-3.3-70b-versatile
-MODEL=gemini/gemini-2.0-flash
-MODEL=openai/gpt-4o-mini
+MODEL=ollama/qwen3.5:9b              # offline, recommended
+MODEL=ollama/llama3.1:8b             # offline, faster
+MODEL=groq/llama-3.3-70b-versatile   # Groq free tier
+MODEL=gemini/gemini-2.0-flash        # Google free tier
+MODEL=openai/gpt-4o-mini             # OpenAI
 ```
+
+Users can also set their own model in Settings → AI Model (stored per-user in DB).
 
 ---
 
-## How It Works
+## Database Management
 
-### Automatic Email Processing
-1. User configures their email in Settings (Gmail/Outlook/Yahoo — just email + password)
-2. Scheduler polls their inbox every minute for new emails with PDF/image attachments
-3. Attachments are downloaded and queued as `ProcessingJob` records
-4. Worker picks up queued jobs, runs OCR + AI crew, saves extracted data as `PENDING` invoice
+```bash
+python db_setup.py setup       # First-time: create all tables
+python db_setup.py migrate     # Add missing columns (run after pulling new code)
+python db_setup.py status      # Show tables and row counts
+python db_setup.py create-db   # Create the PostgreSQL database
+python db_setup.py reset       # Drop and recreate all tables (deletes data!)
+```
 
-### Manual Upload
-1. User uploads a PDF/PNG/JPG via the UI
-2. Same processing pipeline runs asynchronously
-3. Result appears in the Invoices list as `PENDING`
+Always run `migrate` after pulling updates that add new DB columns.
 
-### Approval Flow
-1. User reviews extracted invoice data in the UI
-2. Clicks Approve → invoice status updates to `APPROVED`
-3. System routes to all configured destinations simultaneously:
-   - ERP webhook (POST JSON)
-   - Slack (formatted message)
-   - Email notification (SMTP)
-4. Reject → status updates to `REJECTED` with reason logged
+---
+
+## Docker (Production)
+
+nginx serves the React frontend on port 80 and proxies `/api/*` to FastAPI — one URL for everything, no CORS issues.
+
+```bash
+cp .env.example .env
+# Fill in your values
+
+docker compose up --build
+```
+
+- App: `http://localhost` (port 80)
+- API docs: `http://localhost/docs`
+- PostgreSQL: port 5432
+
+For Ollama VM access from Docker, the VM must bind to `0.0.0.0:11434`:
+```bash
+sudo systemctl edit ollama
+# Add: Environment="OLLAMA_HOST=0.0.0.0:11434"
+sudo systemctl restart ollama
+```
 
 ---
 
@@ -170,42 +201,56 @@ MODEL=openai/gpt-4o-mini
 | Method | Endpoint | Description |
 |---|---|---|
 | POST | `/auth/register` | Create account |
-| POST | `/auth/login` | Login, get JWT token |
+| POST | `/auth/login` | Login, get JWT |
 | GET | `/invoices` | List user's invoices |
-| GET | `/invoices/{id}` | Get invoice detail |
-| POST | `/invoices/upload` | Upload invoice file |
-| GET | `/invoices/jobs/{id}` | Poll processing job status |
-| PATCH | `/invoices/{id}/approve` | Approve + route to destinations |
+| GET | `/invoices/{id}` | Full invoice with bank details + financials |
+| POST | `/invoices/upload` | Upload invoice file → queued job |
+| GET | `/invoices/jobs/{id}` | Poll job status |
+| PATCH | `/invoices/{id}/approve` | Approve → routes to all destinations |
 | PATCH | `/invoices/{id}/reject` | Reject with reason |
 | GET | `/settings/email` | Get email config |
-| PUT | `/settings/email` | Save email config |
+| PUT | `/settings/email` | Save email config (auto-detects IMAP/SMTP) |
 | POST | `/settings/email/test` | Test IMAP connection |
 | POST | `/settings/email/poll-now` | Trigger immediate email poll |
 | GET | `/settings/webhooks` | List webhooks |
-| POST | `/settings/webhooks` | Create webhook |
+| POST | `/settings/webhooks` | Create webhook (with auth, headers, template) |
 | PUT | `/settings/webhooks/{id}` | Update webhook |
 | DELETE | `/settings/webhooks/{id}` | Delete webhook |
 | POST | `/settings/webhooks/{id}/test` | Test webhook |
+| GET | `/settings/model` | Get per-user model config |
+| PUT | `/settings/model` | Set custom model/API key |
 | GET | `/health` | System health check |
-
-Full interactive docs: `http://localhost:8000/docs`
 
 ---
 
-## Docker (Production)
+## Webhook Payload
 
-```bash
-docker build -t invoice-processor .
-docker compose up
+Every approved invoice sends this structured JSON to configured ERP webhooks:
+
+```json
+{
+  "event": "invoice.approved",
+  "timestamp": "2026-04-09T14:30:00Z",
+  "approved_by": "User Name",
+  "invoice": { "invoice_number": "INV-001", "invoice_date": "...", "due_date": "..." },
+  "sender": {
+    "name": "Vendor Name", "address": "...", "tax_id": "...",
+    "bank": { "bank_name": "...", "iban": "...", "swift_bic": "...", "account_number": "..." }
+  },
+  "receiver": {
+    "name": "Client Name", "address": "...",
+    "bank": {}
+  },
+  "line_items": [{ "description": "...", "quantity": 1, "unit_price": 500, "total": 500 }],
+  "financials": {
+    "currency": "USD", "subtotal": 500, "tax_rate": 8, "tax_amount": 40,
+    "discount_total": 0, "shipping": 0, "total_amount": 540, "amount_due": 540
+  },
+  "notes": "..."
+}
 ```
 
-For Ollama VM access from Docker, bind Ollama to `0.0.0.0`:
-```bash
-# On the Ollama VM
-sudo systemctl edit ollama
-# Add: Environment="OLLAMA_HOST=0.0.0.0:11434"
-sudo systemctl restart ollama
-```
+Slack gets a formatted message. Email gets a full HTML invoice with all details.
 
 ---
 
@@ -213,18 +258,19 @@ sudo systemctl restart ollama
 
 1. Clone the repo
 2. Install PostgreSQL locally, create `invoice_db`
-3. Copy `.env.example` → `.env`, fill in your DB password and model config
-4. Get `google_credentials.json` from project owner if needed (not in repo)
+3. Copy `.env.example` → `.env`, fill in your values
+4. Get `google_credentials.json` from project owner (not in repo)
 5. Install Tesseract OCR
-6. Run `uv sync` then `uv run uvicorn api:app --reload --port 8000`
-7. In another terminal: `cd invoiceiq-dash && npm install && npm run dev`
+6. Run `uv sync` then `python db_setup.py setup`
+7. Run `uv run uvicorn api:app --host 0.0.0.0 --port 8000 --reload --reload-exclude ".venv"`
+8. In another terminal: `cd invoiceiq-dash && npm install && npm run dev`
 
 ---
 
-## Known Limitations & Improvement Opportunities
+## Known Limitations
 
-- **Auth is JWT only** — no OAuth, no password reset. Replace with a proper auth service for production.
-- **OCR accuracy** — Tesseract misreads digits on low-quality scans. Use GPT-4o vision or Gemini for near-perfect extraction.
-- **In-memory job queue** — `jobs.py` is legacy. All jobs now use the DB but the old in-memory dict is still imported. Clean up when stable.
-- **No duplicate detection** — same invoice can be processed twice if emailed again. Add hash-based dedup.
-- **Webhook retry** — failed webhooks are logged but not retried. Add retry logic for production.
+- Auth is JWT only — no OAuth, no password reset
+- Users are in-memory on restart unless DB-backed (TODO: migrate auth to DB)
+- OCR accuracy depends on image quality — use GPT-4o vision for near-perfect extraction
+- Webhook retry on failure is logged but not automatically retried (TODO)
+- No duplicate invoice detection across different email subjects

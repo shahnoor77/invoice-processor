@@ -1,17 +1,63 @@
 version: "3.9"
 
 services:
-  invoice-app:
-    build: .
-    ports:
-      - "8501:8501"
+
+  # ── PostgreSQL Database ──────────────────────────────────────────────────────
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
     environment:
-      - OPENAI_API_KEY=fake-key
-      - OLLAMA_BASE_URL=http://110.39.187.178:11434
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-postgres}
+      POSTGRES_DB: invoice_db
     volumes:
-      - ./knowledge:/app/knowledge
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── FastAPI Backend ──────────────────────────────────────────────────────────
+  api:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=postgresql://postgres:${DB_PASSWORD:-postgres}@db:5432/invoice_db
+      - OPENAI_API_KEY=fake-key
+      - OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+      - OLLAMA_API_BASE=${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+      - MODEL=${MODEL:-ollama/qwen3.5:9b}
+      - MODEL_API_KEY=${MODEL_API_KEY:-}
+      - JWT_SECRET_KEY=${JWT_SECRET_KEY:-change-this-in-production}
+      - SMTP_USER=${SMTP_USER:-}
+      - SMTP_PASSWORD=${SMTP_PASSWORD:-}
+      - GOOGLE_CREDENTIALS_FILE=${GOOGLE_CREDENTIALS_FILE:-google_credentials.json}
+      - GOOGLE_SHEET_ID=${GOOGLE_SHEET_ID:-}
+    volumes:
+      - ./google_credentials.json:/app/google_credentials.json:ro
+      - invoice_temp:/tmp
+    depends_on:
+      db:
+        condition: service_healthy
     extra_hosts:
       - "host.docker.internal:host-gateway"
-    dns:
-      - 8.8.8.8
-      - 8.8.4.4
+
+  # ── Nginx — serves React frontend + proxies API ──────────────────────────────
+  nginx:
+    image: nginx:alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      - api
+
+volumes:
+  postgres_data:
+  invoice_temp:

@@ -27,11 +27,10 @@ Archive.zip
 # React — old UI (replaced by invoiceiq-dash)
 invoice-ui/
 
-# React — new UI (node_modules only)
+# React — new UI (node_modules only, src files are tracked)
 invoiceiq-dash/node_modules/
 invoiceiq-dash/dist/
 invoiceiq-dash/.git/
-
 # Gmail Credentials
 token.json
 credentials.json

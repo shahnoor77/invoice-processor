@@ -1,30 +1,53 @@
+# ── Stage 1: Build React frontend ─────────────────────────────────────────────
+FROM node:20-slim AS frontend-builder
+
+WORKDIR /app/invoiceiq-dash
+COPY invoiceiq-dash/package*.json ./
+RUN npm ci --silent
+COPY invoiceiq-dash/ ./
+RUN npm run build
+
+
+# ── Stage 2: Python backend ────────────────────────────────────────────────────
 FROM ghcr.io/astral-sh/uv:python3.11-bookworm-slim
 
-# System dependencies (for OCR/image processing)
+# System dependencies for OCR and image processing
 RUN apt-get update && apt-get install -y \
     libgl1 \
     libglib2.0-0 \
     tesseract-ocr \
+    tesseract-ocr-eng \
+    libpq-dev \
+    curl \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
-# Copy dependency files first (layer caching)
+# Copy dependency files first for layer caching
 COPY pyproject.toml uv.lock* ./
 COPY src ./src
 
-# Install dependencies using uv (fast, parallel downloads)
+# Install Python dependencies
 RUN uv sync --frozen --no-dev
 
-# Copy the rest of the project
-COPY . .
+# Copy backend source
+COPY api.py auth.py database.py models.py destinations.py \
+     scheduler.py worker.py jobs.py db_setup.py ./
+COPY knowledge/ ./knowledge/
+COPY .env.example ./.env.example
 
-# Expose Streamlit port
-EXPOSE 8501
+# Copy built frontend from stage 1
+COPY --from=frontend-builder /app/invoiceiq-dash/dist ./static
 
-# Environment defaults (can be overridden at runtime)
+# Expose FastAPI port
+EXPOSE 8000
+
+# Environment defaults — override at runtime via docker-compose or -e flags
 ENV OPENAI_API_KEY=fake-key
-ENV OLLAMA_BASE_URL=http://110.39.187.178:11434
+ENV OLLAMA_BASE_URL=http://host.docker.internal:11434
+ENV OLLAMA_API_BASE=http://host.docker.internal:11434
+ENV MODEL=ollama/qwen3.5:9b
+ENV DATABASE_URL=postgresql://postgres:postgres@db:5432/invoice_db
 
-# Run using uv so it uses the managed venv
-CMD ["uv", "run", "streamlit", "run", "app.py", "--server.port=8501", "--server.address=0.0.0.0"]
+# Run DB migration then start the API
+CMD ["sh", "-c", "uv run python db_setup.py migrate && uv run uvicorn api:app --host 0.0.0.0 --port 8000"]

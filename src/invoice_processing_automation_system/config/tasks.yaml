@@ -27,48 +27,93 @@ structured_data_extraction:
     {ocr_text}
     ---
 
+    IDENTIFICATION RULES — read carefully:
+    - "sender" = the party who ISSUED/CREATED/SENT the invoice. Look for: FROM, VENDOR, SELLER,
+      SUPPLIER, BILLED BY, INVOICE FROM, company letterhead at top, logo name, "We are pleased to
+      invoice you", PAYABLE TO, REMIT TO, BANK DETAILS OF SELLER
+    - "receiver" = the party who RECEIVES/PAYS the invoice. Look for: TO, BILL TO, SHIP TO,
+      CLIENT, CUSTOMER, BUYER, SOLD TO, INVOICE TO, ATTENTION
+    - NEVER merge sender and receiver into one object
+    - If only one party is shown, it is the SENDER
+
+    BANK DETAILS RULES:
+    - Extract bank details for BOTH sender and receiver if present
+    - Bank fields: bank_name, account_number, iban, swift_bic, routing_number, sort_code,
+      account_holder, branch, bank_address
+    - Sender bank = where payment should be SENT TO
+    - Receiver bank = buyer's bank details (if shown)
+
     STRICT RULES:
-    - INVOICE NUMBER is critical — search the entire text for patterns like INV-, #, No., Number, Invoice No, Ref.
-      Copy it EXACTLY including any prefix (e.g. INV-2024-001, #1234, INV0042). Never set it to null if any number exists.
-    - Copy every number EXACTLY as written (e.g. "1,250.00" → 1250.00)
-    - sender = party who ISSUED the invoice (FROM / vendor / supplier / company letterhead at top)
-    - receiver = party who RECEIVES the invoice (TO / bill-to / ship-to / client)
-    - For addresses: copy the FULL address including street, city, state, zip, country as separate fields
+    - INVOICE NUMBER is critical — search for: INV-, #, No., Number, Invoice No, Ref, Reference,
+      Invoice ID. Copy EXACTLY including prefix. Never null if any reference exists.
+    - Copy every number EXACTLY as written
     - Dates must be YYYY-MM-DD format
     - Numeric fields: numbers only, no currency symbols
-    - If a field is not in the text, set it to null — never calculate or guess
+    - If a field is not in the text, set it to null
     - Copy ALL line items — do not skip any
-    - total_amount must match the TOTAL/GRAND TOTAL line exactly
-    - amount_due must match the BALANCE DUE / AMOUNT DUE line exactly
-    - Do NOT perform any arithmetic — only copy what is written
+    - Do NOT perform any arithmetic
 
     Output ONLY valid JSON, no explanation, no markdown:
     {
-      "sender": {"name": null, "address": null, "city": null, "country": null, "phone": null, "email": null, "tax_id": null, "website": null},
-      "receiver": {"name": null, "address": null, "city": null, "country": null, "phone": null, "email": null, "tax_id": null},
+      "sender": {
+        "name": null, "address": null, "city": null, "state": null, "zip": null,
+        "country": null, "phone": null, "email": null, "website": null,
+        "tax_id": null, "vat_number": null, "registration_number": null,
+        "bank": {
+          "bank_name": null, "account_holder": null, "account_number": null,
+          "iban": null, "swift_bic": null, "routing_number": null,
+          "sort_code": null, "branch": null, "bank_address": null
+        }
+      },
+      "receiver": {
+        "name": null, "address": null, "city": null, "state": null, "zip": null,
+        "country": null, "phone": null, "email": null,
+        "tax_id": null, "vat_number": null,
+        "bank": {
+          "bank_name": null, "account_holder": null, "account_number": null,
+          "iban": null, "swift_bic": null, "routing_number": null,
+          "sort_code": null, "branch": null
+        }
+      },
       "invoice_number": null,
       "invoice_date": null,
       "due_date": null,
+      "delivery_date": null,
       "purchase_order": null,
       "payment_terms": null,
-      "line_items": [{"description": null, "quantity": null, "unit": null, "unit_price": null, "discount": null, "total": null}],
+      "payment_method": null,
+      "reference": null,
+      "line_items": [
+        {
+          "description": null, "quantity": null, "unit": null,
+          "unit_price": null, "discount_percent": null, "discount_amount": null,
+          "tax_percent": null, "tax_amount": null, "total": null
+        }
+      ],
       "subtotal": null,
       "discount_total": null,
+      "discount_percent": null,
       "tax_rate": null,
       "tax_amount": null,
+      "tax_type": null,
       "shipping": null,
+      "handling": null,
+      "other_charges": null,
       "total_amount": null,
       "amount_paid": null,
       "amount_due": null,
+      "deposit": null,
       "currency": null,
+      "exchange_rate": null,
       "notes": null,
-      "bank_details": null,
+      "terms_and_conditions": null,
       "confidence": "HIGH"
     }
   expected_output: >
     Valid JSON only. Values copied verbatim from the raw invoice text.
-    Invoice number must never be null if any reference number exists in the text.
-    Full addresses in separate city/country fields. No calculated values. Null only for truly missing fields.
+    Sender and receiver must be separate with their own bank details.
+    Invoice number must never be null if any reference exists.
+    All financial fields extracted. Null only for truly missing fields.
   agent: data_extraction_specialist
 
 invoice_data_validation:

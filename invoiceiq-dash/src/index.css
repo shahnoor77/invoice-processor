@@ -1,0 +1,95 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 0 0% 100%;
+    --foreground: 220 13% 9%;
+    --card: 0 0% 100%;
+    --card-foreground: 220 13% 9%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 220 13% 9%;
+    --primary: 239 84% 67%;
+    --primary-foreground: 0 0% 100%;
+    --primary-dark: 239 84% 58%;
+    --secondary: 210 17% 98%;
+    --secondary-foreground: 220 13% 9%;
+    --muted: 210 17% 95%;
+    --muted-foreground: 220 9% 46%;
+    --accent: 210 17% 95%;
+    --accent-foreground: 220 13% 9%;
+    --destructive: 0 84% 60%;
+    --destructive-foreground: 0 0% 100%;
+    --success: 160 84% 39%;
+    --success-foreground: 0 0% 100%;
+    --warning: 38 92% 50%;
+    --warning-foreground: 0 0% 100%;
+    --info: 217 91% 60%;
+    --info-foreground: 0 0% 100%;
+    --border: 220 13% 91%;
+    --input: 220 13% 91%;
+    --ring: 239 84% 67%;
+    --radius: 0.75rem;
+    --surface-2: 210 17% 98%;
+    --surface-3: 210 17% 96%;
+    --sidebar-background: 0 0% 100%;
+    --sidebar-foreground: 220 13% 9%;
+    --sidebar-primary: 239 84% 67%;
+    --sidebar-primary-foreground: 0 0% 100%;
+    --sidebar-accent: 210 17% 96%;
+    --sidebar-accent-foreground: 220 13% 9%;
+    --sidebar-border: 220 13% 91%;
+    --sidebar-ring: 239 84% 67%;
+  }
+
+  .dark {
+    --background: 240 6% 6%;
+    --foreground: 0 0% 98%;
+    --card: 240 6% 6%;
+    --card-foreground: 0 0% 98%;
+    --popover: 240 6% 10%;
+    --popover-foreground: 0 0% 98%;
+    --primary: 239 84% 67%;
+    --primary-foreground: 0 0% 100%;
+    --primary-dark: 239 84% 58%;
+    --secondary: 240 4% 10%;
+    --secondary-foreground: 0 0% 98%;
+    --muted: 240 4% 16%;
+    --muted-foreground: 240 5% 65%;
+    --accent: 240 4% 16%;
+    --accent-foreground: 0 0% 98%;
+    --destructive: 0 63% 31%;
+    --destructive-foreground: 0 0% 98%;
+    --success: 160 84% 39%;
+    --success-foreground: 0 0% 100%;
+    --warning: 38 92% 50%;
+    --warning-foreground: 0 0% 100%;
+    --info: 217 91% 60%;
+    --info-foreground: 0 0% 100%;
+    --border: 240 4% 26%;
+    --input: 240 4% 26%;
+    --ring: 239 84% 67%;
+    --surface-2: 240 6% 10%;
+    --surface-3: 240 4% 16%;
+    --sidebar-background: 240 6% 10%;
+    --sidebar-foreground: 0 0% 98%;
+    --sidebar-primary: 239 84% 67%;
+    --sidebar-primary-foreground: 0 0% 100%;
+    --sidebar-accent: 240 4% 16%;
+    --sidebar-accent-foreground: 0 0% 98%;
+    --sidebar-border: 240 4% 26%;
+    --sidebar-ring: 239 84% 67%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply bg-background text-foreground font-sans antialiased transition-colors duration-300;
+  }
+}
