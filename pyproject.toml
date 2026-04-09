@@ -9,6 +9,7 @@ dependencies = [
     "alembic>=1.18.4",
     "argon2-cffi>=25.1.0",
     "crewai[google-genai,litellm,tools]==1.11.0",
+    "dnspython>=2.8.0",
     "fastapi>=0.135.3",
     "google-api-python-client>=2.193.0",
     "google-auth>=2.49.1",

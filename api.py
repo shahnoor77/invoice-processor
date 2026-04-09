@@ -188,15 +188,23 @@ _EMAIL_PRESETS = {
 }
 
 def _resolve_email_config(email: str, data: EmailConfigIn) -> dict:
-    """Fill in IMAP/SMTP settings from domain if not explicitly provided."""
-    domain = email.split("@")[-1].lower()
-    preset = _EMAIL_PRESETS.get(domain, {
-        "imap_host": f"imap.{domain}", "imap_port": 993, "imap_encryption": "SSL/TLS",
-        "smtp_host": f"smtp.{domain}", "smtp_port": 587, "smtp_encryption": "STARTTLS",
-    })
+    """
+    Fill in IMAP/SMTP settings from domain.
+    For known providers uses hardcoded settings.
+    For custom domains does MX lookup with multiple fallbacks.
+    """
+    domain = email.split("@")[-1].lower().strip()
+
+    # Known providers — exact settings
+    if domain in _EMAIL_PRESETS:
+        preset = _EMAIL_PRESETS[domain]
+    else:
+        # Custom domain — try to discover IMAP host via MX record + common patterns
+        preset = _discover_email_settings(domain)
+
     return {
         "email": email,
-        "username": email,  # username = email for most providers
+        "username": email,
         "password": data.password,
         "display_name": data.display_name or email,
         "imap_host": data.imap_host or preset["imap_host"],
@@ -211,6 +219,69 @@ def _resolve_email_config(email: str, data: EmailConfigIn) -> dict:
         "delete_after_process": data.delete_after_process,
         "max_emails_per_poll": data.max_emails_per_poll,
         "is_active": data.is_active,
+    }
+
+
+def _discover_email_settings(domain: str) -> dict:
+    """
+    Discover IMAP/SMTP settings for a custom domain.
+    Tries MX record lookup then common hostname patterns.
+    """
+    import socket
+
+    # Common hostname patterns to try
+    imap_candidates = [
+        f"mail.{domain}",
+        f"imap.{domain}",
+        f"imap4.{domain}",
+        domain,
+        f"webmail.{domain}",
+    ]
+    smtp_candidates = [
+        f"mail.{domain}",
+        f"smtp.{domain}",
+        domain,
+        f"webmail.{domain}",
+    ]
+
+    # Try MX record to get the mail server
+    try:
+        import dns.resolver
+        mx_records = dns.resolver.resolve(domain, "MX")
+        mx_host = str(sorted(mx_records, key=lambda r: r.preference)[0].exchange).rstrip(".")
+        # Add MX host as first candidate
+        imap_candidates.insert(0, mx_host)
+        smtp_candidates.insert(0, mx_host)
+    except Exception:
+        pass  # dns.resolver not available or no MX record
+
+    # Find first resolvable IMAP host
+    imap_host = f"mail.{domain}"  # default fallback
+    for candidate in imap_candidates:
+        try:
+            socket.getaddrinfo(candidate, 993, socket.AF_INET, socket.SOCK_STREAM)
+            imap_host = candidate
+            break
+        except socket.gaierror:
+            continue
+
+    # Find first resolvable SMTP host
+    smtp_host = f"mail.{domain}"  # default fallback
+    for candidate in smtp_candidates:
+        try:
+            socket.getaddrinfo(candidate, 587, socket.AF_INET, socket.SOCK_STREAM)
+            smtp_host = candidate
+            break
+        except socket.gaierror:
+            continue
+
+    return {
+        "imap_host": imap_host,
+        "imap_port": 993,
+        "imap_encryption": "SSL/TLS",
+        "smtp_host": smtp_host,
+        "smtp_port": 587,
+        "smtp_encryption": "STARTTLS",
     }
 
 
