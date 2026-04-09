@@ -12,9 +12,11 @@ import tempfile
 from datetime import datetime, timedelta
 from typing import Optional
 
-from fastapi import BackgroundTasks, Depends, FastAPI, File, Form, HTTPException, UploadFile, status
+from fastapi import BackgroundTasks, Depends, FastAPI, File, Form, HTTPException, Request, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 from jose import JWTError, jwt
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
@@ -60,6 +62,37 @@ def startup():
     from worker import start_worker
     start_scheduler(interval_seconds=30)   # check every 30s
     start_worker(poll_interval_seconds=5)  # pick up jobs every 5s
+
+    # Serve React frontend if built (Docker production build)
+    # Mount AFTER all API routes so /api/* still works
+    static_dir = os.path.join(os.path.dirname(__file__), "static")
+    if os.path.exists(static_dir):
+        # Serve static assets (JS, CSS, images)
+        assets_dir = os.path.join(static_dir, "assets")
+        if os.path.exists(assets_dir):
+            app.mount("/assets", StaticFiles(directory=assets_dir), name="assets")
+
+        # Serve root static files (favicon, robots.txt etc)
+        @app.get("/favicon.svg", include_in_schema=False)
+        @app.get("/favicon.ico", include_in_schema=False)
+        @app.get("/robots.txt", include_in_schema=False)
+        async def serve_static_file(request: Request):
+            filename = request.url.path.lstrip("/")
+            filepath = os.path.join(static_dir, filename)
+            if os.path.exists(filepath):
+                return FileResponse(filepath)
+            return FileResponse(os.path.join(static_dir, "index.html"))
+
+        # Catch-all: serve index.html for all non-API routes (React SPA routing)
+        @app.get("/{full_path:path}", include_in_schema=False)
+        async def serve_spa(full_path: str):
+            # Don't intercept API routes
+            if full_path.startswith("api/") or full_path.startswith("docs") or full_path.startswith("openapi"):
+                raise HTTPException(status_code=404)
+            index = os.path.join(static_dir, "index.html")
+            if os.path.exists(index):
+                return FileResponse(index)
+            raise HTTPException(status_code=404)
 
 
 # ── Auth helpers ──────────────────────────────────────────────────────────────

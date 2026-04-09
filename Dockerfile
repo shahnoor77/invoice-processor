@@ -49,5 +49,5 @@ ENV OLLAMA_API_BASE=http://host.docker.internal:11434
 ENV MODEL=ollama/qwen3.5:9b
 ENV DATABASE_URL=postgresql://postgres:postgres@db:5432/invoice_db
 
-# Run DB migration then start the API
-CMD ["sh", "-c", "uv run python db_setup.py migrate && uv run uvicorn api:app --host 0.0.0.0 --port 8000"]
+# Run DB setup (creates tables if missing) then start the API
+CMD ["sh", "-c", "uv run python db_setup.py setup && uv run uvicorn api:app --host 0.0.0.0 --port 8000"]
