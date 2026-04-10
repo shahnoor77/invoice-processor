@@ -144,6 +144,7 @@ export interface RealInvoice {
   notes: string | null
   terms_and_conditions: string | null
   ocr_confidence: string | null
+  full_json: Record<string, unknown> | null
   approval_status: string
   approved_by: string | null
   approved_at: string | null

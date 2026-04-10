@@ -4,6 +4,54 @@ from typing import Type, Optional, List
 from pydantic import BaseModel, Field
 from invoice_processing_automation_system.fetch_latest_emails import fetch_latest_invoice_attachments
 
+
+# ── Shared OCR helpers ────────────────────────────────────────────────────────
+
+# Tesseract config tuned for invoice numbers and financial figures:
+# preserve_interword_spaces keeps column alignment intact
+# char_whitelist avoids confusing O/0, l/1 in numeric fields
+TESS_CFG = (
+    "--psm 6 --oem 3 "
+    "-c preserve_interword_spaces=1 "
+    "-c tessedit_char_whitelist="
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+    "0123456789.,/:;-_()@#%&+= "
+)
+
+
+def _preprocess_for_ocr(img):
+    """
+    Shared image preprocessing pipeline for both PDF pages and standalone images.
+    Optimised for invoice number / financial figure accuracy.
+    """
+    from PIL import ImageFilter, ImageEnhance
+    import numpy as np
+
+    # Upscale if too small — Tesseract needs ~300-400 DPI equivalent
+    w, h = img.size
+    if w < 2000 or h < 2000:
+        scale = max(2000 / w, 2000 / h)
+        from PIL import Image
+        img = img.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
+
+    # Light denoise — median filter removes salt-and-pepper without blurring digits
+    img = img.filter(ImageFilter.MedianFilter(size=3))
+
+    # Moderate sharpening — two passes is enough; over-sharpening breaks thin strokes
+    img = img.filter(ImageFilter.SHARPEN)
+    img = img.filter(ImageFilter.SHARPEN)
+
+    # Contrast boost
+    img = ImageEnhance.Contrast(img).enhance(2.5)
+
+    # Otsu-style binarization using mean of min/max
+    arr = np.array(img)
+    threshold = int((int(arr.min()) + int(arr.max())) / 2)
+    img = img.point(lambda p: 255 if p > threshold else 0)
+
+    return img
+
+
 class PDFTextExtractorInput(BaseModel):
     """Input schema for PDFTextExtractor."""
     file_path: str = Field(..., description="The absolute file path to the PDF file to extract text from.")
@@ -51,7 +99,7 @@ class PDFTextExtractor(BaseTool):
         try:
             import pymupdf
             import pytesseract
-            from PIL import Image, ImageFilter, ImageEnhance
+            from PIL import Image
             import io
 
             tesseract_path = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
@@ -63,27 +111,18 @@ class PDFTextExtractor(BaseTool):
             all_confidences = []
 
             for i, page in enumerate(doc):
-                # Render page to image at 300 DPI
-                mat = pymupdf.Matrix(300 / 72, 300 / 72)
+                # Render at 400 DPI for better number recognition
+                mat = pymupdf.Matrix(400 / 72, 400 / 72)
                 pix = page.get_pixmap(matrix=mat, colorspace=pymupdf.csGRAY)
                 img = Image.open(io.BytesIO(pix.tobytes("png"))).convert("L")
 
-                # Preprocess
-                img = img.filter(ImageFilter.MedianFilter(size=3))
-                img = img.filter(ImageFilter.SHARPEN)
-                img = img.filter(ImageFilter.SHARPEN)
-                img = img.filter(ImageFilter.SHARPEN)
-                img = ImageEnhance.Contrast(img).enhance(3.0)
-                import numpy as np
-                arr = np.array(img)
-                threshold = int((arr.min() + arr.max()) / 2)
-                img = img.point(lambda p: 255 if p > threshold else 0)
+                img = _preprocess_for_ocr(img)
 
-                data = pytesseract.image_to_data(img, config="--psm 6 --oem 3", output_type=pytesseract.Output.DICT)
+                data = pytesseract.image_to_data(img, config=TESS_CFG, output_type=pytesseract.Output.DICT)
                 confs = [int(c) for c in data["conf"] if int(c) > 0]
                 all_confidences.extend(confs)
 
-                text = pytesseract.image_to_string(img, config="--psm 6 --oem 3")
+                text = pytesseract.image_to_string(img, config=TESS_CFG)
                 if text.strip():
                     all_text.append(f"--- Page {i+1} ---\n{text}")
 
@@ -124,14 +163,12 @@ class ImageTextExtractor(BaseTool):
             return f"Error: File not found at {file_path}"
         try:
             import pytesseract
-            from PIL import Image, ImageFilter, ImageEnhance
-            import numpy as np
+            from PIL import Image
 
             # Set tesseract path for Windows if needed
             tesseract_path = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
             if os.path.exists(tesseract_path):
                 pytesseract.pytesseract.tesseract_cmd = tesseract_path
-            # On Linux, tesseract is in PATH by default (installed via apt)
 
             img = Image.open(file_path)
             # Handle palette images with transparency
@@ -139,28 +176,10 @@ class ImageTextExtractor(BaseTool):
                 img = img.convert("RGBA")
             img = img.convert("L")  # grayscale
 
-            # Upscale small images — Tesseract works best at 300 DPI equivalent
-            w, h = img.size
-            if w < 1500 or h < 1500:
-                scale = max(1500 / w, 1500 / h)
-                img = img.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
-
-            # Denoise + sharpen + contrast
-            img = img.filter(ImageFilter.MedianFilter(size=3))  # remove noise
-            img = img.filter(ImageFilter.SHARPEN)
-            img = img.filter(ImageFilter.SHARPEN)
-            img = img.filter(ImageFilter.SHARPEN)
-            img = ImageEnhance.Contrast(img).enhance(3.0)  # stronger contrast
-
-            # Adaptive binarization — better than fixed threshold for mixed lighting
-            import numpy as np
-            arr = np.array(img)
-            # Use Otsu-like threshold: mean of min and max
-            threshold = int((arr.min() + arr.max()) / 2)
-            img = img.point(lambda p: 255 if p > threshold else 0)
+            img = _preprocess_for_ocr(img)
 
             # Get OCR with confidence data
-            data = pytesseract.image_to_data(img, config="--psm 6 --oem 3", output_type=pytesseract.Output.DICT)
+            data = pytesseract.image_to_data(img, config=TESS_CFG, output_type=pytesseract.Output.DICT)
 
             words = [w for w, c in zip(data["text"], data["conf"]) if w.strip() and int(c) > 0]
             confidences = [int(c) for c in data["conf"] if int(c) > 0]
@@ -169,7 +188,7 @@ class ImageTextExtractor(BaseTool):
                 return "OCR_RESULT: No text could be extracted. Image may be too blurry or low quality. Do NOT fabricate any data — mark all fields as null."
 
             avg_conf = sum(confidences) / len(confidences) if confidences else 0
-            text = pytesseract.image_to_string(img, config="--psm 6 --oem 3")
+            text = pytesseract.image_to_string(img, config=TESS_CFG)
 
             if avg_conf < 50:
                 return (

@@ -59,6 +59,143 @@ def _safe_float(v) -> float | None:
         return None
 
 
+def _validate_and_correct(extracted: dict) -> dict:
+    """
+    Intelligently validate invoice calculations and auto-correct where possible.
+    Stores a 'validation_issues' list in the returned dict describing what was wrong.
+    Corrected values are marked with '_corrected' suffix in validation_issues.
+    """
+    TOLERANCE = 0.02  # 2 cents tolerance for rounding differences
+    issues = []
+
+    def sf(v):
+        return _safe_float(v)
+
+    # ── 1. Recompute line item totals ─────────────────────────────────────────
+    line_items = extracted.get("line_items") or []
+    for idx, item in enumerate(line_items):
+        qty = sf(item.get("quantity"))
+        price = sf(item.get("unit_price"))
+        discount_pct = sf(item.get("discount_percent"))
+        discount_amt = sf(item.get("discount_amount"))
+        tax_pct = sf(item.get("tax_percent"))
+        tax_amt = sf(item.get("tax_amount"))
+        stated_total = sf(item.get("total"))
+
+        if qty is not None and price is not None:
+            base = qty * price
+            # Apply discount
+            if discount_amt is not None:
+                base -= discount_amt
+            elif discount_pct is not None:
+                base -= base * discount_pct / 100
+            # Apply line-level tax
+            if tax_amt is not None:
+                computed = base + tax_amt
+            elif tax_pct is not None:
+                computed = base + base * tax_pct / 100
+            else:
+                computed = base
+
+            if stated_total is not None and abs(computed - stated_total) > TOLERANCE:
+                issues.append({
+                    "field": f"line_items[{idx}].total",
+                    "original": stated_total,
+                    "corrected": round(computed, 2),
+                    "note": f"Line {idx+1}: {qty} × {price} = {round(computed,2)}, invoice shows {stated_total}",
+                })
+                item["total"] = round(computed, 2)
+            elif stated_total is None:
+                item["total"] = round(computed, 2)
+
+    # ── 2. Recompute subtotal from line items ─────────────────────────────────
+    computed_subtotal = None
+    if line_items:
+        totals = [sf(item.get("total")) for item in line_items]
+        if all(t is not None for t in totals):
+            computed_subtotal = round(sum(totals), 2)  # type: ignore[arg-type]
+
+    stated_subtotal = sf(extracted.get("subtotal"))
+    if computed_subtotal is not None:
+        if stated_subtotal is not None and abs(computed_subtotal - stated_subtotal) > TOLERANCE:
+            issues.append({
+                "field": "subtotal",
+                "original": stated_subtotal,
+                "corrected": computed_subtotal,
+                "note": f"Sum of line items = {computed_subtotal}, invoice shows {stated_subtotal}",
+            })
+            extracted["subtotal"] = computed_subtotal
+        elif stated_subtotal is None:
+            extracted["subtotal"] = computed_subtotal
+
+    effective_subtotal = sf(extracted.get("subtotal")) or 0.0
+
+    # ── 3. Validate / derive tax amount ──────────────────────────────────────
+    tax_rate = sf(extracted.get("tax_rate"))
+    stated_tax = sf(extracted.get("tax_amount"))
+    computed_tax = None
+    if tax_rate is not None and effective_subtotal:
+        computed_tax = round(effective_subtotal * tax_rate / 100, 2)
+        if stated_tax is not None and abs(computed_tax - stated_tax) > TOLERANCE:
+            issues.append({
+                "field": "tax_amount",
+                "original": stated_tax,
+                "corrected": computed_tax,
+                "note": f"{effective_subtotal} × {tax_rate}% = {computed_tax}, invoice shows {stated_tax}",
+            })
+            extracted["tax_amount"] = computed_tax
+        elif stated_tax is None:
+            extracted["tax_amount"] = computed_tax
+
+    effective_tax = sf(extracted.get("tax_amount")) or 0.0
+
+    # ── 4. Validate total_amount ──────────────────────────────────────────────
+    discount_total = sf(extracted.get("discount_total")) or 0.0
+    shipping = sf(extracted.get("shipping")) or 0.0
+    handling = sf(extracted.get("handling")) or 0.0
+    other = sf(extracted.get("other_charges")) or 0.0
+
+    computed_total = round(
+        effective_subtotal - discount_total + effective_tax + shipping + handling + other, 2
+    )
+    stated_total = sf(extracted.get("total_amount"))
+
+    if stated_total is not None and abs(computed_total - stated_total) > TOLERANCE:
+        issues.append({
+            "field": "total_amount",
+            "original": stated_total,
+            "corrected": computed_total,
+            "note": (
+                f"subtotal({effective_subtotal}) - discount({discount_total}) "
+                f"+ tax({effective_tax}) + shipping({shipping}) + other({other}) "
+                f"= {computed_total}, invoice shows {stated_total}"
+            ),
+        })
+        extracted["total_amount"] = computed_total
+    elif stated_total is None and effective_subtotal:
+        extracted["total_amount"] = computed_total
+
+    # ── 5. Validate amount_due ────────────────────────────────────────────────
+    effective_total = sf(extracted.get("total_amount")) or 0.0
+    amount_paid = sf(extracted.get("amount_paid")) or 0.0
+    stated_due = sf(extracted.get("amount_due"))
+    computed_due = round(effective_total - amount_paid, 2)
+
+    if stated_due is not None and abs(computed_due - stated_due) > TOLERANCE:
+        issues.append({
+            "field": "amount_due",
+            "original": stated_due,
+            "corrected": computed_due,
+            "note": f"total({effective_total}) - paid({amount_paid}) = {computed_due}, invoice shows {stated_due}",
+        })
+        extracted["amount_due"] = computed_due
+    elif stated_due is None and effective_total:
+        extracted["amount_due"] = computed_due
+
+    extracted["validation_issues"] = issues
+    return extracted
+
+
 def _get_user_lock(user_id: str) -> Lock:
     """Get or create a per-user lock to prevent parallel AI calls for same user."""
     with _user_locks_lock:
@@ -166,28 +303,45 @@ def _extract_ocr(file_path: str) -> str:
     return result
 
 
-def _run_crew(ocr_text: str, file_path: str, user_id: str = None) -> dict | None:
-    from invoice_processing_automation_system.crew import InvoiceProcessingAutomationSystemCrew
-
-    # Apply per-user model config if available
+def _resolve_model_config(user_id: str | None) -> "ModelConfig":
+    """
+    Return a ModelConfig for the given user.
+    Checks user_model_configs table first; falls back to process env.
+    Never mutates os.environ — safe for concurrent threads.
+    """
+    from invoice_processing_automation_system.crew import ModelConfig
     if user_id:
         try:
             from models import UserModelConfig
             db_tmp = SessionLocal()
             ucfg = db_tmp.query(UserModelConfig).filter(UserModelConfig.user_id == user_id).first()
-            if ucfg:
-                if ucfg.model_name:
-                    os.environ["MODEL"] = ucfg.model_name
-                if ucfg.api_key:
-                    os.environ["MODEL_API_KEY"] = ucfg.api_key
-                if ucfg.base_url:
-                    os.environ["OLLAMA_BASE_URL"] = ucfg.base_url
-                    os.environ["OLLAMA_API_BASE"] = ucfg.base_url
             db_tmp.close()
-        except Exception:
-            pass
+            if ucfg and (ucfg.model_name or ucfg.api_key or ucfg.base_url):
+                default = ModelConfig.from_env()
+                return ModelConfig(
+                    model=ucfg.model_name or default.model,
+                    api_key=ucfg.api_key or default.api_key,
+                    base_url=ucfg.base_url or default.base_url,
+                )
+        except Exception as e:
+            log.warning(f"Could not load user model config for {user_id}: {e}")
+    return ModelConfig.from_env()
 
-    result = InvoiceProcessingAutomationSystemCrew().crew().kickoff(inputs={
+
+def _run_crew(ocr_text: str, file_path: str, user_id: str = None) -> dict | None:
+    from invoice_processing_automation_system.crew import InvoiceProcessingAutomationSystemCrew
+
+    # Resolve per-user model config without touching os.environ
+    model_cfg = _resolve_model_config(user_id)
+
+    crew_instance = (
+        InvoiceProcessingAutomationSystemCrew()
+        .set_model_config(model_cfg)
+    )
+    result = crew_instance.crew_minimal(
+        erp_system="pending_approval",
+        notification_channel="none",
+    ).kickoff(inputs={
         "intake_source": f"Files to process:\n{file_path}",
         "ocr_text": ocr_text,
         "erp_system": "pending_approval",
@@ -368,6 +522,9 @@ def process_job(job: ProcessingJob, db) -> bool:
 
         if not extracted:
             raise ValueError("AI crew returned no structured data")
+
+        # Validate calculations and auto-correct where possible
+        extracted = _validate_and_correct(extracted)
 
         # Save to DB
         try:

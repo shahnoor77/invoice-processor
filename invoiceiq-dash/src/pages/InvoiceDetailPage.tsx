@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
-import { ArrowLeft, CheckCircle, XCircle, Loader2, FileText, Building2, Calendar, CreditCard, Mail, Phone, MapPin, Hash, Clock, Receipt } from 'lucide-react';
+import { ArrowLeft, CheckCircle, XCircle, Loader2, MapPin, Phone, Hash, Clock, Receipt, Calendar, CreditCard, Mail } from 'lucide-react';
 import { apiGetInvoice, apiApproveInvoice, apiRejectInvoice, RealInvoice } from '@/lib/api';
 import { StatusBadge } from '@/components/invoice/StatusBadge';
 import { toast } from 'sonner';
@@ -10,6 +10,29 @@ function mapStatus(s: string): 'Pending' | 'Approved' | 'Rejected' {
   if (s === 'APPROVED') return 'Approved';
   if (s === 'REJECTED') return 'Rejected';
   return 'Pending';
+}
+
+type ValidationIssue = { field: string; original: number; corrected: number; note: string };
+
+/** Renders a value cell. If the field was auto-corrected, shows the wrong value struck-through in amber, then the correct value. */
+function ValCell({ field, value, currency = '', issueMap }: {
+  field: string;
+  value: number | null | undefined;
+  currency?: string;
+  issueMap: Record<string, ValidationIssue>;
+}) {
+  const issue = issueMap[field];
+  const fmt = (n: number) => `${currency} ${n.toFixed(2)}`.trim();
+  if (value == null) return <span className="text-muted-foreground">—</span>;
+  if (!issue) return <span>{fmt(value)}</span>;
+  return (
+    <span className="inline-flex items-center gap-1.5">
+      <span className="line-through text-amber-500/70 bg-amber-500/10 px-1 rounded text-[10px]" title={issue.note}>
+        {fmt(issue.original)}
+      </span>
+      <span>{fmt(value)}</span>
+    </span>
+  );
 }
 
 export default function InvoiceDetailPage() {
@@ -76,10 +99,16 @@ export default function InvoiceDetailPage() {
 
   const status = mapStatus(invoice.approval_status);
   const statusColors = { Pending: 'bg-warning', Approved: 'bg-success', Rejected: 'bg-destructive' };
+  const cur = invoice.currency || '';
+
+  // Validation issues map: field → issue
+  const validationIssues: ValidationIssue[] = (invoice.full_json as any)?.validation_issues ?? [];
+  const issueMap: Record<string, ValidationIssue> = Object.fromEntries(validationIssues.map(i => [i.field, i]));
+  const hasIssues = validationIssues.length > 0;
+
   const subtotal = invoice.subtotal ?? invoice.line_items.reduce((s, li) => s + (li.quantity ?? 0) * (li.unit_price ?? 0), 0);
   const tax = invoice.tax_amount ?? 0;
 
-  // Helper to check if bank details exist
   const hasSenderBank = invoice.sender_bank_name || invoice.sender_bank_iban || invoice.sender_bank_account_number || invoice.sender_bank_swift;
   const hasReceiverBank = invoice.receiver_bank_name || invoice.receiver_bank_iban || invoice.receiver_bank_account_number;
   const container = { hidden: {}, show: { transition: { staggerChildren: 0.06 } } };
@@ -96,6 +125,11 @@ export default function InvoiceDetailPage() {
           <div className="flex items-center gap-2.5 flex-wrap">
             <h1 className="text-lg font-bold text-foreground">{invoice.invoice_number || 'Invoice'}</h1>
             <StatusBadge status={status} />
+            {hasIssues && (
+              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-amber-500/15 text-amber-600 text-[10px] font-medium border border-amber-500/30">
+                ⚠ {validationIssues.length} calc {validationIssues.length === 1 ? 'fix' : 'fixes'} applied
+              </span>
+            )}
           </div>
           <p className="text-xs text-muted-foreground mt-0.5">From {invoice.sender_name || invoice.file_name || '—'}</p>
         </div>
@@ -104,9 +138,10 @@ export default function InvoiceDetailPage() {
       <div className={`h-1 ${statusColors[status]} rounded-full mb-5`} />
 
       <motion.div variants={container} initial="hidden" animate="show" className="space-y-5">
+        {/* Supplier + Invoice Details */}
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
           <motion.div variants={item} className="border border-border rounded-xl p-4 bg-background">
-            <h3 className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider mb-3">Supplier Information</h3>
+            <h3 className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider mb-3">Supplier</h3>
             <div className="flex items-center gap-3 mb-3">
               <div className="w-9 h-9 rounded-lg bg-primary/15 flex items-center justify-center text-primary font-semibold text-xs flex-shrink-0">
                 {(invoice.sender_name || 'UN').split(' ').map(w => w[0]).join('').slice(0, 2).toUpperCase()}
@@ -136,6 +171,7 @@ export default function InvoiceDetailPage() {
           </motion.div>
         </div>
 
+        {/* Line Items */}
         <motion.div variants={item} className="border border-border rounded-xl overflow-hidden bg-background">
           <div className="px-4 py-3 border-b border-border">
             <h3 className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider">Line Items</h3>
@@ -144,7 +180,7 @@ export default function InvoiceDetailPage() {
             <table className="w-full text-xs">
               <thead>
                 <tr className="bg-surface-2 text-muted-foreground">
-                  <th className="px-4 py-2.5 text-left font-medium w-10">#</th>
+                  <th className="px-4 py-2.5 text-left font-medium w-8">#</th>
                   <th className="px-4 py-2.5 text-left font-medium">Description</th>
                   <th className="px-4 py-2.5 text-right font-medium">Qty</th>
                   <th className="px-4 py-2.5 text-right font-medium">Unit Price</th>
@@ -155,28 +191,50 @@ export default function InvoiceDetailPage() {
                 {invoice.line_items.length === 0 && (
                   <tr><td colSpan={5} className="px-4 py-4 text-center text-muted-foreground">No line items</td></tr>
                 )}
-                {invoice.line_items.map((li, i) => (
-                  <tr key={li.id} className="border-t border-border">
-                    <td className="px-4 py-2.5 text-muted-foreground">{i + 1}</td>
-                    <td className="px-4 py-2.5 text-foreground">{li.description || '—'}</td>
-                    <td className="px-4 py-2.5 text-right text-foreground">{li.quantity ?? '—'}</td>
-                    <td className="px-4 py-2.5 text-right text-foreground">{li.unit_price != null ? `${invoice.currency || ''} ${li.unit_price.toFixed(2)}` : '—'}</td>
-                    <td className="px-4 py-2.5 text-right font-medium text-foreground">{li.total != null ? `${invoice.currency || ''} ${li.total.toFixed(2)}` : '—'}</td>
-                  </tr>
-                ))}
+                {invoice.line_items.map((li, i) => {
+                  const liIssue = issueMap[`line_items[${i}].total`];
+                  return (
+                    <tr key={li.id} className={`border-t border-border ${liIssue ? 'bg-amber-500/5' : ''}`}>
+                      <td className="px-4 py-2.5 text-muted-foreground">{i + 1}</td>
+                      <td className="px-4 py-2.5 text-foreground">{li.description || '—'}</td>
+                      <td className="px-4 py-2.5 text-right text-foreground">{li.quantity ?? '—'}</td>
+                      <td className="px-4 py-2.5 text-right text-foreground">
+                        {li.unit_price != null ? `${cur} ${li.unit_price.toFixed(2)}` : '—'}
+                      </td>
+                      <td className="px-4 py-2.5 text-right font-medium text-foreground">
+                        {li.total != null ? (
+                          liIssue ? (
+                            <span className="inline-flex items-center gap-1.5">
+                              <span className="line-through text-amber-500/70 bg-amber-500/10 px-1 rounded text-[10px]" title={liIssue.note}>
+                                {cur} {liIssue.original.toFixed(2)}
+                              </span>
+                              {cur} {li.total.toFixed(2)}
+                            </span>
+                          ) : `${cur} ${li.total.toFixed(2)}`
+                        ) : '—'}
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
               <tfoot>
-                <tr className="border-t border-border">
+                <tr className={`border-t border-border ${issueMap['subtotal'] ? 'bg-amber-500/5' : ''}`}>
                   <td colSpan={4} className="px-4 py-2 text-right text-muted-foreground">Subtotal</td>
-                  <td className="px-4 py-2 text-right text-foreground">{invoice.currency || ''} {subtotal.toFixed(2)}</td>
+                  <td className="px-4 py-2 text-right text-foreground">
+                    <ValCell field="subtotal" value={invoice.subtotal ?? subtotal} currency={cur} issueMap={issueMap} />
+                  </td>
                 </tr>
-                <tr>
+                <tr className={issueMap['tax_amount'] ? 'bg-amber-500/5' : ''}>
                   <td colSpan={4} className="px-4 py-2 text-right text-muted-foreground">Tax ({invoice.tax_rate ?? 0}%)</td>
-                  <td className="px-4 py-2 text-right text-foreground">{invoice.currency || ''} {tax.toFixed(2)}</td>
+                  <td className="px-4 py-2 text-right text-foreground">
+                    <ValCell field="tax_amount" value={invoice.tax_amount ?? tax} currency={cur} issueMap={issueMap} />
+                  </td>
                 </tr>
-                <tr className="border-t border-border font-semibold">
-                  <td colSpan={4} className="px-4 py-2.5 text-right text-foreground">Grand Total</td>
-                  <td className="px-4 py-2.5 text-right text-foreground text-sm">{invoice.currency || ''} {(invoice.total_amount ?? subtotal + tax).toFixed(2)}</td>
+                <tr className={`border-t border-border font-semibold ${issueMap['total_amount'] ? 'bg-amber-500/5' : ''}`}>
+                  <td colSpan={4} className="px-4 py-2.5 text-right text-foreground">Total</td>
+                  <td className="px-4 py-2.5 text-right text-foreground text-sm">
+                    <ValCell field="total_amount" value={invoice.total_amount ?? subtotal + tax} currency={cur} issueMap={issueMap} />
+                  </td>
                 </tr>
               </tfoot>
             </table>
@@ -203,7 +261,7 @@ export default function InvoiceDetailPage() {
             )}
             {hasReceiverBank && (
               <div className="border border-border rounded-xl p-4 bg-background">
-                <h3 className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider mb-3">Receiver Bank Details</h3>
+                <h3 className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider mb-3">Receiver Bank</h3>
                 <div className="space-y-1.5">
                   {invoice.receiver_bank_name && <BankRow label="Bank" value={invoice.receiver_bank_name} />}
                   {invoice.receiver_bank_account_holder && <BankRow label="Account Holder" value={invoice.receiver_bank_account_holder} />}
@@ -225,24 +283,44 @@ export default function InvoiceDetailPage() {
           </div>
           <div className="p-4 flex justify-end">
             <table style={{ width: 320, borderCollapse: 'collapse' }}>
-              {invoice.subtotal != null && <FinRow label="Subtotal" value={`${invoice.currency || ''} ${invoice.subtotal.toFixed(2)}`} />}
-              {(invoice.discount_total ?? 0) > 0 && <FinRow label={`Discount${invoice.discount_percent ? ` (${invoice.discount_percent}%)` : ''}`} value={`- ${invoice.currency || ''} ${invoice.discount_total!.toFixed(2)}`} />}
-              {invoice.tax_amount != null && <FinRow label={`${invoice.tax_type || 'Tax'}${invoice.tax_rate ? ` (${invoice.tax_rate}%)` : ''}`} value={`${invoice.currency || ''} ${invoice.tax_amount.toFixed(2)}`} />}
-              {(invoice.shipping ?? 0) > 0 && <FinRow label="Shipping" value={`${invoice.currency || ''} ${invoice.shipping!.toFixed(2)}`} />}
-              {(invoice.handling ?? 0) > 0 && <FinRow label="Handling" value={`${invoice.currency || ''} ${invoice.handling!.toFixed(2)}`} />}
-              {(invoice.other_charges ?? 0) > 0 && <FinRow label="Other Charges" value={`${invoice.currency || ''} ${invoice.other_charges!.toFixed(2)}`} />}
-              <tr className="border-t-2 border-primary">
+              {invoice.subtotal != null && (
+                <FinRow label="Subtotal" field="subtotal" value={invoice.subtotal} currency={cur} issueMap={issueMap} />
+              )}
+              {(invoice.discount_total ?? 0) > 0 && (
+                <FinRow label={`Discount${invoice.discount_percent ? ` (${invoice.discount_percent}%)` : ''}`}
+                  field="discount_total" value={invoice.discount_total} currency={cur} issueMap={issueMap} prefix="- " />
+              )}
+              {invoice.tax_amount != null && (
+                <FinRow label={`${invoice.tax_type || 'Tax'}${invoice.tax_rate ? ` (${invoice.tax_rate}%)` : ''}`}
+                  field="tax_amount" value={invoice.tax_amount} currency={cur} issueMap={issueMap} />
+              )}
+              {(invoice.shipping ?? 0) > 0 && (
+                <FinRow label="Shipping" field="shipping" value={invoice.shipping} currency={cur} issueMap={issueMap} />
+              )}
+              {(invoice.handling ?? 0) > 0 && (
+                <FinRow label="Handling" field="handling" value={invoice.handling} currency={cur} issueMap={issueMap} />
+              )}
+              {(invoice.other_charges ?? 0) > 0 && (
+                <FinRow label="Other Charges" field="other_charges" value={invoice.other_charges} currency={cur} issueMap={issueMap} />
+              )}
+              <tr className={`border-t-2 border-primary ${issueMap['total_amount'] ? 'bg-amber-500/5' : ''}`}>
                 <td className="px-3 py-2.5 font-bold text-sm text-foreground">Total</td>
                 <td className="px-3 py-2.5 text-right font-bold text-sm text-primary">
-                  {invoice.currency || ''} {(invoice.total_amount ?? subtotal + tax).toFixed(2)}
+                  <ValCell field="total_amount" value={invoice.total_amount ?? subtotal + tax} currency={cur} issueMap={issueMap} />
                 </td>
               </tr>
-              {(invoice.amount_paid ?? 0) > 0 && <FinRow label="Amount Paid" value={`${invoice.currency || ''} ${invoice.amount_paid!.toFixed(2)}`} />}
-              {(invoice.deposit ?? 0) > 0 && <FinRow label="Deposit" value={`${invoice.currency || ''} ${invoice.deposit!.toFixed(2)}`} />}
+              {(invoice.amount_paid ?? 0) > 0 && (
+                <FinRow label="Amount Paid" field="amount_paid" value={invoice.amount_paid} currency={cur} issueMap={issueMap} />
+              )}
+              {(invoice.deposit ?? 0) > 0 && (
+                <FinRow label="Deposit" field="deposit" value={invoice.deposit} currency={cur} issueMap={issueMap} />
+              )}
               {invoice.amount_due != null && (
-                <tr className="bg-warning/10">
+                <tr className={`${issueMap['amount_due'] ? 'bg-amber-500/10' : 'bg-warning/10'}`}>
                   <td className="px-3 py-2 font-semibold text-xs text-warning">Amount Due</td>
-                  <td className="px-3 py-2 text-right font-semibold text-xs text-warning">{invoice.currency || ''} {invoice.amount_due.toFixed(2)}</td>
+                  <td className="px-3 py-2 text-right font-semibold text-xs text-warning">
+                    <ValCell field="amount_due" value={invoice.amount_due} currency={cur} issueMap={issueMap} />
+                  </td>
                 </tr>
               )}
             </table>
@@ -326,11 +404,31 @@ function BankRow({ label, value }: { label: string; value: string }) {
   );
 }
 
-function FinRow({ label, value }: { label: string; value: string }) {
+function FinRow({ label, field, value, currency = '', issueMap, prefix = '' }: {
+  label: string;
+  field: string;
+  value: number | null | undefined;
+  currency?: string;
+  issueMap: Record<string, ValidationIssue>;
+  prefix?: string;
+}) {
+  const issue = issueMap[field];
+  const fmt = (n: number) => `${prefix}${currency} ${n.toFixed(2)}`.trim();
   return (
-    <tr>
+    <tr className={issue ? 'bg-amber-500/5' : ''}>
       <td className="px-3 py-1.5 text-xs text-muted-foreground">{label}</td>
-      <td className="px-3 py-1.5 text-right text-xs text-foreground">{value}</td>
+      <td className="px-3 py-1.5 text-right text-xs text-foreground">
+        {value == null ? '—' : issue ? (
+          <span className="inline-flex items-center gap-1.5">
+            <span className="line-through text-amber-500/70 bg-amber-500/10 px-1 rounded text-[10px]" title={issue.note}>
+              {fmt(issue.original)}
+            </span>
+            {fmt(value)}
+          </span>
+        ) : fmt(value)}
+      </td>
     </tr>
   );
 }
+
+
