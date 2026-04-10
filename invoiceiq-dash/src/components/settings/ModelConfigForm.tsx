@@ -38,6 +38,8 @@ export function ModelConfigForm({ onBack, onComplete }: Props) {
         setSelectedPreset('ollama/qwen3.5:9b');
       }
       if (cfg.base_url) setBaseUrl(cfg.base_url);
+      // Never pre-fill the key field — the backend masks it as "***"
+      // User must re-enter it only if they want to change it
     }).catch(() => {});
   }, []);
 
@@ -55,8 +57,9 @@ export function ModelConfigForm({ onBack, onComplete }: Props) {
       const finalModel = selectedPreset === 'custom' ? modelName : selectedPreset;
       await apiSaveModelConfig({
         model_name: finalModel || null,
-        api_key: apiKey || null,
-        base_url: baseUrl || null,
+        // Only send api_key if user typed something — empty string means "keep existing"
+        api_key: apiKey.trim() || null,
+        base_url: baseUrl.trim() || null,
       });
       toast.success('Model configuration saved');
       onComplete();
@@ -121,7 +124,7 @@ export function ModelConfigForm({ onBack, onComplete }: Props) {
           <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }}>
             <label className={labelClass}>API Key</label>
             <input type="password" value={apiKey} onChange={e => setApiKey(e.target.value)}
-              placeholder="Your API key" className={inputClass} />
+              placeholder={config?.api_key ? "Leave blank to keep existing key" : "Your API key"} className={inputClass} />
             {config?.api_key && <p className="text-xs text-success mt-1 flex items-center gap-1"><CheckCircle size={11} /> API key saved</p>}
           </motion.div>
         )}

@@ -41,16 +41,16 @@ def make_llm(temperature: float = 0.1, cfg: Optional[ModelConfig] = None) -> LLM
 
     is_ollama = cfg.model.startswith("ollama/")
 
-    # litellm needs OLLAMA_API_BASE for Ollama models, but we set it per-call
-    # via base_url on the LLM object — no global env mutation needed.
     extra_kwargs: dict = {}
     if "qwen3" in cfg.model.lower():
         extra_kwargs["extra_body"] = {"think": False}
 
     return LLM(
         model=cfg.model,
+        # base_url only makes sense for ollama; cloud providers use their own endpoints
         base_url=cfg.base_url if is_ollama else None,
-        api_key=None if is_ollama else cfg.api_key,
+        # ollama doesn't need an api_key; cloud providers do
+        api_key=cfg.api_key if (not is_ollama and cfg.api_key) else None,
         temperature=temperature,
         timeout=300,
         max_retries=3,

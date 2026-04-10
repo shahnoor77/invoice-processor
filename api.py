@@ -12,7 +12,7 @@ import tempfile
 from datetime import datetime, timedelta
 from typing import Optional
 
-from fastapi import BackgroundTasks, Depends, FastAPI, File, Form, HTTPException, Request, UploadFile, status
+from fastapi import APIRouter, BackgroundTasks, Depends, FastAPI, File, Form, HTTPException, Request, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from fastapi.staticfiles import StaticFiles
@@ -37,7 +37,8 @@ SECRET_KEY = os.environ.get("JWT_SECRET_KEY", "change-this-in-production")
 ALGORITHM = "HS256"
 TOKEN_EXPIRE_HOURS = 8
 
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
+# Token URL must match the /api prefix the frontend uses
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/login")
 
 app = FastAPI(
     title="Invoice Processing Automation API",
@@ -53,29 +54,30 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# All API routes live under /api — matches what the frontend calls directly
+# (no nginx or vite proxy needed in production)
+router = APIRouter(prefix="/api")
+
 
 @app.on_event("startup")
 def startup():
     init_db()
-    # Start background services
     from scheduler import start_scheduler
     from worker import start_worker
-    start_scheduler(interval_seconds=30)   # check every 30s
-    start_worker(poll_interval_seconds=5)  # pick up jobs every 5s
+    start_scheduler(interval_seconds=30)
+    start_worker(poll_interval_seconds=5)
 
-    # Serve React frontend if built (Docker production build)
-    # Mount AFTER all API routes so /api/* still works
+    # Serve React build from /static — mounted AFTER router registration
+    # so /api/* routes are never intercepted
     static_dir = os.path.join(os.path.dirname(__file__), "static")
     if os.path.exists(static_dir):
-        # Serve static assets (JS, CSS, images)
         assets_dir = os.path.join(static_dir, "assets")
         if os.path.exists(assets_dir):
             app.mount("/assets", StaticFiles(directory=assets_dir), name="assets")
 
-        # Serve root static files (favicon, robots.txt etc)
-        @app.get("/favicon.svg", include_in_schema=False)
-        @app.get("/favicon.ico", include_in_schema=False)
-        @app.get("/robots.txt", include_in_schema=False)
+        @router.get("/favicon.svg", include_in_schema=False)
+        @router.get("/favicon.ico", include_in_schema=False)
+        @router.get("/robots.txt", include_in_schema=False)
         async def serve_static_file(request: Request):
             filename = request.url.path.lstrip("/")
             filepath = os.path.join(static_dir, filename)
@@ -83,10 +85,8 @@ def startup():
                 return FileResponse(filepath)
             return FileResponse(os.path.join(static_dir, "index.html"))
 
-        # Catch-all: serve index.html for all non-API routes (React SPA routing)
-        @app.get("/{full_path:path}", include_in_schema=False)
+        @router.get("/{full_path:path}", include_in_schema=False)
         async def serve_spa(full_path: str):
-            # Don't intercept API routes
             if full_path.startswith("api/") or full_path.startswith("docs") or full_path.startswith("openapi"):
                 raise HTTPException(status_code=404)
             index = os.path.join(static_dir, "index.html")
@@ -129,7 +129,7 @@ class RegisterRequest(BaseModel):
     name: str
 
 
-@app.post("/auth/register", tags=["Auth"])
+@router.post("/auth/register", tags=["Auth"])
 def register(req: RegisterRequest, db: Session = Depends(get_db)):
     if db.query(User).filter(User.email == req.email).first():
         raise HTTPException(status_code=400, detail="Email already registered")
@@ -138,7 +138,7 @@ def register(req: RegisterRequest, db: Session = Depends(get_db)):
     return {"message": "Registered successfully", "email": user.email}
 
 
-@app.post("/auth/login", tags=["Auth"])
+@router.post("/auth/login", tags=["Auth"])
 def login(form: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
     user = db.query(User).filter(User.email == form.username).first()
     if not user or user.password_hash != _hash(form.password):
@@ -148,7 +148,7 @@ def login(form: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get
     return {"access_token": _create_token(user.email), "token_type": "bearer", "name": user.name}
 
 
-@app.get("/auth/me", tags=["Auth"])
+@router.get("/auth/me", tags=["Auth"])
 def me(user: User = Depends(get_current_user)):
     return {"id": user.id, "email": user.email, "name": user.name}
 
@@ -285,7 +285,7 @@ def _discover_email_settings(domain: str) -> dict:
     }
 
 
-@app.get("/settings/email", tags=["Settings"])
+@router.get("/settings/email", tags=["Settings"])
 def get_email_config(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     cfg = db.query(EmailConfig).filter(EmailConfig.user_id == user.id).first()
     if not cfg:
@@ -293,7 +293,7 @@ def get_email_config(user: User = Depends(get_current_user), db: Session = Depen
     return {k: v for k, v in cfg.__dict__.items() if not k.startswith("_")}
 
 
-@app.put("/settings/email", tags=["Settings"])
+@router.put("/settings/email", tags=["Settings"])
 def save_email_config(data: EmailConfigIn, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     resolved = _resolve_email_config(data.email, data)
     cfg = db.query(EmailConfig).filter(EmailConfig.user_id == user.id).first()
@@ -310,7 +310,7 @@ def save_email_config(data: EmailConfigIn, user: User = Depends(get_current_user
     return {"message": "Email config saved", "imap_host": cfg.imap_host, "imap_port": cfg.imap_port}
 
 
-@app.post("/settings/email/poll-now", tags=["Settings"])
+@router.post("/settings/email/poll-now", tags=["Settings"])
 def poll_now(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     """Manually trigger email polling for this user right now."""
     from scheduler import poll_user_emails
@@ -321,7 +321,7 @@ def poll_now(user: User = Depends(get_current_user), db: Session = Depends(get_d
     return {"message": f"Polled successfully", "new_jobs_queued": count}
 
 
-@app.post("/settings/email/test", tags=["Settings"])
+@router.post("/settings/email/test", tags=["Settings"])
 def test_email_connection(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     cfg = db.query(EmailConfig).filter(EmailConfig.user_id == user.id).first()
     if not cfg:
@@ -364,20 +364,20 @@ class WebhookIn(BaseModel):
     is_active: bool = True
 
 
-@app.get("/settings/webhooks", tags=["Settings"])
+@router.get("/settings/webhooks", tags=["Settings"])
 def list_webhooks(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     hooks = db.query(Webhook).filter(Webhook.user_id == user.id).all()
     return [{k: v for k, v in h.__dict__.items() if not k.startswith("_")} for h in hooks]
 
 
-@app.post("/settings/webhooks", tags=["Settings"])
+@router.post("/settings/webhooks", tags=["Settings"])
 def create_webhook(data: WebhookIn, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     hook = Webhook(user_id=user.id, **data.model_dump())
     db.add(hook); db.commit()
     return {"id": hook.id, "message": "Webhook created"}
 
 
-@app.put("/settings/webhooks/{webhook_id}", tags=["Settings"])
+@router.put("/settings/webhooks/{webhook_id}", tags=["Settings"])
 def update_webhook(webhook_id: str, data: WebhookIn, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     hook = db.query(Webhook).filter(Webhook.id == webhook_id, Webhook.user_id == user.id).first()
     if not hook:
@@ -388,7 +388,7 @@ def update_webhook(webhook_id: str, data: WebhookIn, user: User = Depends(get_cu
     return {"message": "Webhook updated"}
 
 
-@app.delete("/settings/webhooks/{webhook_id}", tags=["Settings"])
+@router.delete("/settings/webhooks/{webhook_id}", tags=["Settings"])
 def delete_webhook(webhook_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     hook = db.query(Webhook).filter(Webhook.id == webhook_id, Webhook.user_id == user.id).first()
     if not hook:
@@ -397,7 +397,7 @@ def delete_webhook(webhook_id: str, user: User = Depends(get_current_user), db: 
     return {"message": "Webhook deleted"}
 
 
-@app.post("/settings/webhooks/{webhook_id}/test", tags=["Settings"])
+@router.post("/settings/webhooks/{webhook_id}/test", tags=["Settings"])
 def test_webhook(webhook_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     hook = db.query(Webhook).filter(Webhook.id == webhook_id, Webhook.user_id == user.id).first()
     if not hook:
@@ -419,7 +419,7 @@ class ModelConfigIn(BaseModel):
     base_url: Optional[str] = None
 
 
-@app.get("/settings/model", tags=["Settings"])
+@router.get("/settings/model", tags=["Settings"])
 def get_model_config(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     cfg = db.query(UserModelConfig).filter(UserModelConfig.user_id == user.id).first()
     default_model = os.environ.get("MODEL", "ollama/qwen3.5:9b")
@@ -436,22 +436,33 @@ def get_model_config(user: User = Depends(get_current_user), db: Session = Depen
     }
 
 
-@app.put("/settings/model", tags=["Settings"])
+@router.put("/settings/model", tags=["Settings"])
+@router.put("/settings/model", tags=["Settings"])
 def save_model_config(data: ModelConfigIn, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     cfg = db.query(UserModelConfig).filter(UserModelConfig.user_id == user.id).first()
+    # Never overwrite a real key with the masked placeholder "***"
+    incoming_key = data.api_key if (data.api_key and data.api_key != "***") else None
     if cfg:
-        if data.model_name is not None: cfg.model_name = data.model_name or None
-        if data.api_key is not None: cfg.api_key = data.api_key or None
-        if data.base_url is not None: cfg.base_url = data.base_url or None
+        if data.model_name is not None:
+            cfg.model_name = data.model_name or None
+        # Only update key if a real new value was provided; keep existing key otherwise
+        if incoming_key:
+            cfg.api_key = incoming_key
+        if data.base_url is not None:
+            cfg.base_url = data.base_url or None
     else:
-        cfg = UserModelConfig(user_id=user.id, model_name=data.model_name or None,
-                              api_key=data.api_key or None, base_url=data.base_url or None)
+        cfg = UserModelConfig(
+            user_id=user.id,
+            model_name=data.model_name or None,
+            api_key=incoming_key,
+            base_url=data.base_url or None,
+        )
         db.add(cfg)
     db.commit()
     return {"message": "Model config saved"}
 
 
-@app.delete("/settings/model", tags=["Settings"])
+@router.delete("/settings/model", tags=["Settings"])
 def reset_model_config(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     """Reset to system defaults."""
     cfg = db.query(UserModelConfig).filter(UserModelConfig.user_id == user.id).first()
@@ -472,13 +483,13 @@ def _invoice_to_dict(inv: Invoice) -> dict:
     return d
 
 
-@app.get("/invoices", tags=["Invoices"])
+@router.get("/invoices", tags=["Invoices"])
 def list_invoices(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     invoices = db.query(Invoice).filter(Invoice.user_id == user.id).order_by(Invoice.created_at.desc()).all()
     return [_invoice_to_dict(i) for i in invoices]
 
 
-@app.get("/invoices/{invoice_id}", tags=["Invoices"])
+@router.get("/invoices/{invoice_id}", tags=["Invoices"])
 def get_invoice(invoice_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     inv = db.query(Invoice).filter(Invoice.id == invoice_id, Invoice.user_id == user.id).first()
     if not inv:
@@ -490,7 +501,7 @@ class ApprovalRequest(BaseModel):
     reject_reason: Optional[str] = None
 
 
-@app.patch("/invoices/{invoice_id}/approve", tags=["Invoices"])
+@router.patch("/invoices/{invoice_id}/approve", tags=["Invoices"])
 def approve_invoice(invoice_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     inv = db.query(Invoice).filter(Invoice.id == invoice_id, Invoice.user_id == user.id).first()
     if not inv:
@@ -533,7 +544,7 @@ def approve_invoice(invoice_id: str, user: User = Depends(get_current_user), db:
     return {"status": "approved", "routing": routing}
 
 
-@app.patch("/invoices/{invoice_id}/reject", tags=["Invoices"])
+@router.patch("/invoices/{invoice_id}/reject", tags=["Invoices"])
 def reject_invoice(invoice_id: str, body: ApprovalRequest, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     inv = db.query(Invoice).filter(Invoice.id == invoice_id, Invoice.user_id == user.id).first()
     if not inv:
@@ -561,7 +572,7 @@ def _parse_json(text: str):
     return None
 
 
-@app.post("/invoices/upload", tags=["Invoices"])
+@router.post("/invoices/upload", tags=["Invoices"])
 async def upload_invoice(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
@@ -585,7 +596,7 @@ async def upload_invoice(
     return {"job_id": job.id, "status": "queued", "file_name": file.filename}
 
 
-@app.get("/invoices/jobs/{job_id}", tags=["Invoices"])
+@router.get("/invoices/jobs/{job_id}", tags=["Invoices"])
 def job_status(job_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     job = db.query(ProcessingJob).filter(ProcessingJob.id == job_id, ProcessingJob.user_id == user.id).first()
     if not job:
@@ -601,7 +612,7 @@ def job_status(job_id: str, user: User = Depends(get_current_user), db: Session 
 
 # ── Health ────────────────────────────────────────────────────────────────────
 
-@app.get("/health", tags=["System"])
+@router.get("/health", tags=["System"])
 def health(db: Session = Depends(get_db)):
     import requests as req
     ollama_url = os.environ.get("OLLAMA_BASE_URL", "http://110.39.187.178:11434")
@@ -626,3 +637,16 @@ def health(db: Session = Depends(get_db)):
         "database": "connected" if db_ok else "error",
         "active_model": os.environ.get("MODEL", "ollama/qwen3.5:9b"),
     }
+
+# Register all /api/* routes
+app.include_router(router)
+
+# Serve React build — catch-all so client-side routing works
+_static_dir = os.path.join(os.path.dirname(__file__), "static")
+if os.path.isdir(_static_dir):
+    app.mount("/assets", StaticFiles(directory=os.path.join(_static_dir, "assets")), name="assets")
+
+    @app.get("/{full_path:path}", include_in_schema=False)
+    def spa_fallback(full_path: str):
+        index = os.path.join(_static_dir, "index.html")
+        return FileResponse(index)

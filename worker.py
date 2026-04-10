@@ -316,23 +316,30 @@ def _resolve_model_config(user_id: str | None) -> "ModelConfig":
             db_tmp = SessionLocal()
             ucfg = db_tmp.query(UserModelConfig).filter(UserModelConfig.user_id == user_id).first()
             db_tmp.close()
-            if ucfg and (ucfg.model_name or ucfg.api_key or ucfg.base_url):
+            if ucfg and ucfg.model_name:
+                user_model = ucfg.model_name
+                is_ollama = user_model.startswith("ollama/")
                 default = ModelConfig.from_env()
-                return ModelConfig(
-                    model=ucfg.model_name or default.model,
-                    api_key=ucfg.api_key or default.api_key,
-                    base_url=ucfg.base_url or default.base_url,
+                # Reject "***" — masked placeholder that was never properly saved
+                real_key = ucfg.api_key if (ucfg.api_key and ucfg.api_key != "***") else None
+                resolved = ModelConfig(
+                    model=user_model,
+                    base_url=ucfg.base_url or (default.base_url if is_ollama else None),
+                    api_key=real_key or (None if is_ollama else default.api_key),
                 )
+                log.info(f"User {user_id} model config: {resolved.model} (key={'set' if resolved.api_key else 'none'})")
+                return resolved
         except Exception as e:
             log.warning(f"Could not load user model config for {user_id}: {e}")
     return ModelConfig.from_env()
 
 
+
 def _run_crew(ocr_text: str, file_path: str, user_id: str = None) -> dict | None:
     from invoice_processing_automation_system.crew import InvoiceProcessingAutomationSystemCrew
 
-    # Resolve per-user model config without touching os.environ
     model_cfg = _resolve_model_config(user_id)
+    log.info(f"Job using model: {model_cfg.model} (user={user_id})")
 
     crew_instance = (
         InvoiceProcessingAutomationSystemCrew()
@@ -347,10 +354,34 @@ def _run_crew(ocr_text: str, file_path: str, user_id: str = None) -> dict | None
         "erp_system": "pending_approval",
         "notification_channel": "none",
     })
-    for task_output in (result.tasks_output or []):
-        if hasattr(task_output, "name") and task_output.name == "structured_data_extraction":
-            return _parse_json(task_output.raw)
-    return _parse_json(str(result.raw))
+
+    tasks_output = result.tasks_output or []
+
+    # Task order: [0] intake, [1] extraction, [2] validation
+    # Try index 1 (structured_data_extraction) first — most reliable
+    if len(tasks_output) > 1:
+        parsed = _parse_json(tasks_output[1].raw)
+        if parsed and isinstance(parsed, dict):
+            log.info("Parsed invoice JSON from task[1] (structured_data_extraction)")
+            return parsed
+
+    # Fallback: scan all task outputs for the one that contains valid invoice JSON
+    for i, task_out in enumerate(tasks_output):
+        parsed = _parse_json(task_out.raw)
+        if parsed and isinstance(parsed, dict) and ("invoice_number" in parsed or "sender" in parsed or "line_items" in parsed):
+            log.info(f"Parsed invoice JSON from task[{i}] fallback")
+            return parsed
+
+    # Last resort: try the final crew result
+    parsed = _parse_json(str(result.raw))
+    if parsed and isinstance(parsed, dict):
+        log.info("Parsed invoice JSON from result.raw fallback")
+        return parsed
+
+    log.error(f"Could not extract invoice JSON. tasks_output count={len(tasks_output)}")
+    if tasks_output:
+        log.error(f"Last task raw (first 500 chars): {tasks_output[-1].raw[:500]}")
+    return None
 
 
 def _with_retry(fn, max_attempts: int = 3, delay: float = 2.0, label: str = ""):

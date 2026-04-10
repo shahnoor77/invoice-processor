@@ -39,8 +39,8 @@ COPY .env.example ./.env.example
 # Copy built frontend from stage 1
 COPY --from=frontend-builder /app/invoiceiq-dash/dist ./static
 
-# Expose FastAPI port
-EXPOSE 8000
+# Expose port 80 — uvicorn serves both API and React static files
+EXPOSE 80
 
 # Environment defaults — override at runtime via docker-compose or -e flags
 ENV OPENAI_API_KEY=fake-key
@@ -50,4 +50,4 @@ ENV MODEL=ollama/qwen3.5:9b
 ENV DATABASE_URL=postgresql://postgres:postgres@db:5432/invoice_db
 
 # Run DB setup (creates tables if missing) then start the API
-CMD ["sh", "-c", "uv run python db_setup.py setup && uv run uvicorn api:app --host 0.0.0.0 --port 8000"]
+CMD ["sh", "-c", "uv run python db_setup.py setup && uv run uvicorn api:app --host 0.0.0.0 --port 80"]
