@@ -232,10 +232,10 @@ export function EmailServerForm({ onNext }: Props) {
           </div>
         </div>
 
-        <label className="flex items-center gap-2 text-sm text-foreground cursor-pointer">
+        {/* <label className="flex items-center gap-2 text-sm text-foreground cursor-pointer">
           <input {...register('mark_as_read')} type="checkbox" className="accent-primary w-4 h-4" />
           Mark emails as read after processing
-        </label>
+        </label> */}
 
         {/* Test result */}
         {testResult === 'success' && (

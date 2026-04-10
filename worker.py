@@ -167,27 +167,37 @@ def _extract_ocr(file_path: str) -> str:
 
 
 def _run_crew(ocr_text: str, file_path: str, user_id: str = None) -> dict | None:
-    from invoice_processing_automation_system.crew import InvoiceProcessingAutomationSystemCrew
+    from invoice_processing_automation_system.crew import InvoiceProcessingAutomationSystemCrew, UserLLMConfig, _thread_local
 
-    # Apply per-user model config if available
+    # Fetch per-user model config from database
+    user_config = None
     if user_id:
         try:
             from models import UserModelConfig
             db_tmp = SessionLocal()
             ucfg = db_tmp.query(UserModelConfig).filter(UserModelConfig.user_id == user_id).first()
             if ucfg:
-                if ucfg.model_name:
-                    os.environ["MODEL"] = ucfg.model_name
-                if ucfg.api_key:
-                    os.environ["MODEL_API_KEY"] = ucfg.api_key
-                if ucfg.base_url:
-                    os.environ["OLLAMA_BASE_URL"] = ucfg.base_url
-                    os.environ["OLLAMA_API_BASE"] = ucfg.base_url
+                log.info(f"Job user {user_id}: Using custom model config - model={ucfg.model_name or 'default'}, api_key={'set' if ucfg.api_key else 'not set'}, base_url={ucfg.base_url or 'default'}")
+                user_config = UserLLMConfig(
+                    user_id=user_id,
+                    model_name=ucfg.model_name,
+                    api_key=ucfg.api_key,
+                    base_url=ucfg.base_url,
+                )
+            else:
+                log.info(f"Job user {user_id}: No custom model config in DB, using system defaults")
             db_tmp.close()
-        except Exception:
-            pass
+        except Exception as e:
+            log.error(f"Job user {user_id}: Failed to load user model config: {e}")
+    
+    # Set thread-local config BEFORE creating the crew instance.
+    # This ensures that when CrewAI's @CrewBase creates agents internally,
+    # make_llm() will read this thread's config via _thread_local.
+    _thread_local.user_config = user_config
 
-    result = InvoiceProcessingAutomationSystemCrew().crew().kickoff(inputs={
+    crew_instance = InvoiceProcessingAutomationSystemCrew()
+    crew_instance._user_config = user_config
+    result = crew_instance.crew().kickoff(inputs={
         "intake_source": f"Files to process:\n{file_path}",
         "ocr_text": ocr_text,
         "erp_system": "pending_approval",

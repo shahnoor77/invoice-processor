@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 import sys
-from invoice_processing_automation_system.crew import InvoiceProcessingAutomationSystemCrew
+from invoice_processing_automation_system.crew import InvoiceProcessingAutomationSystemCrew, UserLLMConfig
 
 # This main file is intended to be a way for your to run your
 # crew locally, so refrain from adding unnecessary logic into this file.
@@ -17,6 +17,16 @@ def run():
         'notification_channel': 'sample_value',
         'ocr_text': 'sample ocr text extracted from invoice details...'
     }
+    
+    # Optional: Set user-specific config for testing
+    # crew = InvoiceProcessingAutomationSystemCrew()
+    # crew.set_user_config(UserLLMConfig(
+    #     model_name="openai/gpt-4",
+    #     api_key="your-api-key",
+    #     base_url=None
+    # ))
+    # crew.crew().kickoff(inputs=inputs)
+    
     InvoiceProcessingAutomationSystemCrew().crew().kickoff(inputs=inputs)
 
 
