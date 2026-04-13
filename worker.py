@@ -44,10 +44,12 @@ _ocr_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="ocr")
 def _parse_json(text: str):
     if not text:
         return None
+    # Direct parse
     try:
         return json.loads(text.strip())
     except Exception:
         pass
+    # Fenced code block: ```json ... ```
     for pat in [r"```(?:json)?\s*(\{.*?\})\s*```", r"(\{[\s\S]*\})"]:
         m = re.search(pat, text, re.DOTALL)
         if m:
@@ -55,6 +57,18 @@ def _parse_json(text: str):
                 return json.loads(m.group(1))
             except Exception:
                 pass
+    # Qwen/thinking models wrap output in <think>...</think> — strip it first
+    cleaned = re.sub(r"<think>[\s\S]*?</think>", "", text, flags=re.IGNORECASE).strip()
+    if cleaned != text:
+        try:
+            return json.loads(cleaned)
+        except Exception:
+            m = re.search(r"(\{[\s\S]*\})", cleaned, re.DOTALL)
+            if m:
+                try:
+                    return json.loads(m.group(1))
+                except Exception:
+                    pass
     return None
 
 
@@ -460,8 +474,16 @@ def _run_crew(ocr_text: str, file_path: str, user_id: str = None) -> dict | None
     if len(tasks_output) > 1:
         parsed = _parse_json(tasks_output[1].raw)
         if parsed and isinstance(parsed, dict):
-            log.info(f"[Crew] ✓ Parsed invoice JSON from task[1] (structured_data_extraction) — keys: {list(parsed.keys())[:6]}")
-            return parsed
+            # Reject model refusal responses — real invoice JSON has invoice fields, not status/message
+            refusal_keys = {"status", "message", "error", "result"}
+            real_keys = {"invoice_number", "sender", "receiver", "line_items", "total_amount", "subtotal"}
+            has_real = bool(real_keys & set(parsed.keys()))
+            is_refusal = not has_real and bool(refusal_keys & set(parsed.keys()))
+            if is_refusal:
+                log.warning(f"[Crew] task[1] returned a refusal/status response: {parsed} — trying fallback")
+            else:
+                log.info(f"[Crew] ✓ Parsed invoice JSON from task[1] — keys: {list(parsed.keys())[:6]}")
+                return parsed
 
     # Fallback: scan all task outputs for valid invoice JSON
     for i, task_out in enumerate(tasks_output):
@@ -478,7 +500,7 @@ def _run_crew(ocr_text: str, file_path: str, user_id: str = None) -> dict | None
 
     log.error(f"[Crew] ✗ Could not extract invoice JSON from any task output (count={len(tasks_output)})")
     for i, t in enumerate(tasks_output):
-        log.error(f"[Crew]   task[{i}] raw preview: {t.raw[:300]!r}")
+        log.error(f"[Crew]   task[{i}] raw preview (first 500): {t.raw[:500]!r}")
     return None
 
 
@@ -642,6 +664,8 @@ def process_job(job: ProcessingJob, db) -> bool:
 
         if len(ocr_text.strip()) < 20:
             log.warning(f"[Job {job.id[:8]}] OCR returned very little text ({len(ocr_text)} chars) — extraction may be poor")
+        else:
+            log.debug(f"[Job {job.id[:8]}] OCR preview: {ocr_text[:300]!r}")
 
         # ── Step 2: AI extraction ─────────────────────────────────────────────
         user_lock = _get_user_lock(job.user_id)

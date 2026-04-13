@@ -19,124 +19,32 @@ invoice_file_detection_and_intake:
 
 structured_data_extraction:
   description: >
-    Extract invoice data from the raw text below. Copy values EXACTLY as they appear.
-    Do not round, convert, reformat, or calculate any value.
+    You are a data extraction specialist. Extract invoice data from the raw text below.
+    Copy values EXACTLY as they appear. Do not calculate, round, or modify any value.
 
-    RAW INVOICE TEXT (copy values from here only):
+    RAW INVOICE TEXT:
     ---
     {ocr_text}
     ---
 
-    IDENTIFICATION RULES — read carefully:
-    - "sender" = the party who ISSUED/CREATED/SENT the invoice. Look for: FROM, VENDOR, SELLER,
-      SUPPLIER, BILLED BY, INVOICE FROM, company letterhead at top, logo name, "We are pleased to
-      invoice you", PAYABLE TO, REMIT TO, BANK DETAILS OF SELLER
-    - "receiver" = the party who RECEIVES/PAYS the invoice. Look for: TO, BILL TO, SHIP TO,
-      CLIENT, CUSTOMER, BUYER, SOLD TO, INVOICE TO, ATTENTION
-    - NEVER merge sender and receiver into one object
-    - If only one party is shown, it is the SENDER
+    RULES:
+    - sender = party who issued/sent the invoice (vendor, seller, top of page)
+    - receiver = party who receives/pays the invoice (bill to, client, buyer)
+    - line_items = ONLY actual products or services sold. NEVER include discount rows,
+      tax rows, shipping rows, subtotal rows, total rows, or balance rows as line items.
+      Those go in their dedicated fields: discount_total, tax_amount, shipping, total_amount, amount_due.
+    - A line item with no unit_price AND no quantity is a summary row — exclude it.
+    - invoice_number: search for INV-, #, No., Invoice No, Ref. Copy exactly with prefix.
+    - dates: YYYY-MM-DD format
+    - numeric fields: numbers only, no currency symbols
+    - missing fields: null
 
-    BANK DETAILS RULES:
-    - Extract bank details for BOTH sender and receiver if present
-    - Bank fields: bank_name, account_number, iban, swift_bic, routing_number, sort_code,
-      account_holder, branch, bank_address
-    - Sender bank = where payment should be SENT TO
-    - Receiver bank = buyer's bank details (if shown)
-
-    LINE ITEMS RULES — critical, read carefully:
-    - line_items MUST contain ONLY actual products or services being sold/billed
-    - Each line item must have a description of what was sold (product name, service name, hours, etc.)
-    - DO NOT include these as line items — put them in their dedicated top-level fields instead:
-        * Discount rows (e.g. "Discount 10%", "Early payment discount", "Promo") → discount_total / discount_percent
-        * Tax rows (e.g. "VAT 20%", "GST", "Sales Tax", "Tax") → tax_amount / tax_rate / tax_type
-        * Shipping / delivery / freight rows → shipping
-        * Handling / packaging rows → handling
-        * Subtotal summary rows → subtotal
-        * Total rows → total_amount
-        * Amount due / balance due rows → amount_due
-        * Amount paid / payment received rows → amount_paid
-        * Deposit rows → deposit
-    - A line item row that has no unit_price and no quantity is almost certainly a summary row — do NOT include it
-    - If a row says "Discount", "Tax", "VAT", "GST", "Shipping", "Total", "Subtotal", "Balance" — it is NOT a line item
-
-    STRICT RULES:
-    - INVOICE NUMBER is critical — search for: INV-, #, No., Number, Invoice No, Ref, Reference,
-      Invoice ID. Copy EXACTLY including prefix. Never null if any reference exists.
-    - Copy every number EXACTLY as written
-    - Dates must be YYYY-MM-DD format
-    - Numeric fields: numbers only, no currency symbols
-    - If a field is not in the text, set it to null
-    - Do NOT perform any arithmetic
-
-    Output ONLY valid JSON, no explanation, no markdown:
-    {
-      "sender": {
-        "name": null, "address": null, "city": null, "state": null, "zip": null,
-        "country": null, "phone": null, "email": null, "website": null,
-        "tax_id": null, "vat_number": null, "registration_number": null,
-        "bank": {
-          "bank_name": null, "account_holder": null, "account_number": null,
-          "iban": null, "swift_bic": null, "routing_number": null,
-          "sort_code": null, "branch": null, "bank_address": null
-        }
-      },
-      "receiver": {
-        "name": null, "address": null, "city": null, "state": null, "zip": null,
-        "country": null, "phone": null, "email": null,
-        "tax_id": null, "vat_number": null,
-        "bank": {
-          "bank_name": null, "account_holder": null, "account_number": null,
-          "iban": null, "swift_bic": null, "routing_number": null,
-          "sort_code": null, "branch": null
-        }
-      },
-      "invoice_number": null,
-      "invoice_date": null,
-      "due_date": null,
-      "delivery_date": null,
-      "purchase_order": null,
-      "payment_terms": null,
-      "payment_method": null,
-      "reference": null,
-      "line_items": [
-        {
-          "description": null,
-          "quantity": null,
-          "unit": null,
-          "unit_price": null,
-          "discount_percent": null,
-          "discount_amount": null,
-          "tax_percent": null,
-          "tax_amount": null,
-          "total": null
-        }
-      ],
-      "subtotal": null,
-      "discount_total": null,
-      "discount_percent": null,
-      "tax_rate": null,
-      "tax_amount": null,
-      "tax_type": null,
-      "shipping": null,
-      "handling": null,
-      "other_charges": null,
-      "total_amount": null,
-      "amount_paid": null,
-      "amount_due": null,
-      "deposit": null,
-      "currency": null,
-      "exchange_rate": null,
-      "notes": null,
-      "terms_and_conditions": null,
-      "confidence": "HIGH"
-    }
+    Output ONLY this JSON with values filled in (no explanation, no markdown, no extra text):
+    {"sender":{"name":null,"address":null,"city":null,"state":null,"zip":null,"country":null,"phone":null,"email":null,"website":null,"tax_id":null,"vat_number":null,"registration_number":null,"bank":{"bank_name":null,"account_holder":null,"account_number":null,"iban":null,"swift_bic":null,"routing_number":null,"sort_code":null,"branch":null,"bank_address":null}},"receiver":{"name":null,"address":null,"city":null,"state":null,"zip":null,"country":null,"phone":null,"email":null,"tax_id":null,"vat_number":null,"bank":{"bank_name":null,"account_holder":null,"account_number":null,"iban":null,"swift_bic":null,"routing_number":null,"sort_code":null,"branch":null}},"invoice_number":null,"invoice_date":null,"due_date":null,"delivery_date":null,"purchase_order":null,"payment_terms":null,"payment_method":null,"reference":null,"line_items":[{"description":null,"quantity":null,"unit":null,"unit_price":null,"discount_percent":null,"discount_amount":null,"tax_percent":null,"tax_amount":null,"total":null}],"subtotal":null,"discount_total":null,"discount_percent":null,"tax_rate":null,"tax_amount":null,"tax_type":null,"shipping":null,"handling":null,"other_charges":null,"total_amount":null,"amount_paid":null,"amount_due":null,"deposit":null,"currency":null,"exchange_rate":null,"notes":null,"terms_and_conditions":null,"confidence":"HIGH"}
   expected_output: >
-    Valid JSON only. Values copied verbatim from the raw invoice text.
-    line_items contains ONLY actual products/services — never discount, tax, shipping, or summary rows.
-    Discounts go in discount_total/discount_percent. Tax goes in tax_amount/tax_rate.
-    Sender and receiver must be separate with their own bank details.
-    Invoice number must never be null if any reference exists.
-    All financial fields extracted. Null only for truly missing fields.
+    Valid JSON only — the template above filled with real values from the invoice text.
+    line_items contains ONLY products/services, never discount/tax/total rows.
+    All fields extracted verbatim. Null only for truly missing fields.
   agent: data_extraction_specialist
 
 invoice_data_validation:
