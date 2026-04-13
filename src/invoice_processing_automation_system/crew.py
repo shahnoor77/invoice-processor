@@ -1,3 +1,4 @@
+import logging
 import os
 from dataclasses import dataclass
 from typing import Callable, Optional
@@ -6,6 +7,8 @@ import litellm
 from crewai import LLM, Agent, Crew, Process, Task
 from crewai.project import CrewBase, agent, crew, task
 from invoice_processing_automation_system.tools.custom_tool import PDFTextExtractor, ImageTextExtractor, GmailInvoiceFetcher
+
+log = logging.getLogger("crew")
 
 _DEFAULT_MODEL = "ollama/qwen3.5:9b"
 _DEFAULT_BASE_URL = "http://110.39.187.178:11434"
@@ -25,16 +28,23 @@ class ModelConfig:
         """Build from process environment (system default)."""
         return ModelConfig(
             model=os.environ.get("MODEL", _DEFAULT_MODEL),
-            api_key=os.environ.get("MODEL_API_KEY"),
+            api_key=os.environ.get("MODEL_API_KEY") or None,
             base_url=os.environ.get("OLLAMA_BASE_URL", _DEFAULT_BASE_URL),
         )
+
+    def describe(self) -> str:
+        """Human-readable summary for logging."""
+        is_ollama = self.model.startswith("ollama/")
+        if is_ollama:
+            return f"{self.model} @ {self.base_url or 'default'}"
+        return f"{self.model} (api_key={'set' if self.api_key else 'MISSING'})"
 
 
 def make_llm(temperature: float = 0.1, cfg: Optional[ModelConfig] = None) -> LLM:
     """
     Build an LLM instance from an explicit ModelConfig.
-    Falls back to process environment when cfg is None (system default path).
-    Never mutates os.environ — safe to call from concurrent threads.
+    Falls back to process environment when cfg is None.
+    Never mutates os.environ — safe for concurrent threads.
     """
     if cfg is None:
         cfg = ModelConfig.from_env()
@@ -45,11 +55,14 @@ def make_llm(temperature: float = 0.1, cfg: Optional[ModelConfig] = None) -> LLM
     if "qwen3" in cfg.model.lower():
         extra_kwargs["extra_body"] = {"think": False}
 
+    log.info(f"[LLM] Building LLM → {cfg.describe()} (temp={temperature})")
+
+    if not is_ollama and not cfg.api_key:
+        log.warning(f"[LLM] Cloud model {cfg.model} has no api_key — requests will likely fail")
+
     return LLM(
         model=cfg.model,
-        # base_url only makes sense for ollama; cloud providers use their own endpoints
         base_url=cfg.base_url if is_ollama else None,
-        # ollama doesn't need an api_key; cloud providers do
         api_key=cfg.api_key if (not is_ollama and cfg.api_key) else None,
         temperature=temperature,
         timeout=300,
@@ -73,10 +86,10 @@ class InvoiceProcessingAutomationSystemCrew:
     def set_model_config(self, cfg: ModelConfig) -> "InvoiceProcessingAutomationSystemCrew":
         """Inject per-user model config — call before crew_minimal()."""
         self._model_cfg = cfg
+        log.info(f"[Crew] Model config set → {cfg.describe()}")
         return self
 
     def _llm(self, temperature: float = 0.1) -> LLM:
-        """Return an LLM built from the injected config (or env default)."""
         return make_llm(temperature=temperature, cfg=self._model_cfg)
 
     @agent
@@ -100,7 +113,7 @@ class InvoiceProcessingAutomationSystemCrew:
             inject_date=False,
             allow_delegation=False,
             max_iter=2,
-            llm=self._llm(temperature=0),  # zero temp for deterministic extraction
+            llm=self._llm(temperature=0),
         )
 
     @agent
@@ -173,11 +186,7 @@ class InvoiceProcessingAutomationSystemCrew:
         )
 
     def crew_minimal(self, erp_system: str = "pending_approval", notification_channel: str = "none") -> Crew:
-        """
-        Returns a crew with only the tasks that are actually needed.
-        ERP integration and notification tasks are skipped when not configured.
-        Uses the injected ModelConfig — no os.environ mutation.
-        """
+        """Minimal crew — skips ERP and notification when not configured."""
         llm = self._llm()
 
         core_agents = [
@@ -193,13 +202,17 @@ class InvoiceProcessingAutomationSystemCrew:
 
         erp_needed = erp_system and erp_system.lower() not in ("", "none", "pending_approval", "skip")
         if erp_needed:
+            log.info(f"[Crew] ERP integration enabled: {erp_system}")
             core_agents.append(self.erp_integration_specialist())
             core_tasks.append(self.erp_system_integration())
 
         notify_needed = notification_channel and notification_channel.lower() not in ("", "none", "skip")
         if notify_needed:
+            log.info(f"[Crew] Notification enabled: {notification_channel}")
             core_agents.append(self.finance_notification_coordinator())
             core_tasks.append(self.finance_team_notification())
+
+        log.info(f"[Crew] Starting minimal crew: {len(core_tasks)} tasks, model={self._model_cfg.describe() if self._model_cfg else 'env-default'}")
 
         return Crew(
             agents=core_agents,

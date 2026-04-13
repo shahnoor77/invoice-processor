@@ -43,6 +43,9 @@ def cmd_migrate():
             ("retry_count", "INTEGER DEFAULT 0"),
             ("email_message_id", "VARCHAR"),
         ],
+        "email_configs": [
+            ("last_seen_uid", "VARCHAR"),
+        ],
         "invoices": [
             ("delivery_date", "VARCHAR"),
             ("payment_method", "VARCHAR"),

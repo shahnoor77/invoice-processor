@@ -1,10 +1,16 @@
 """
 Email Poller Scheduler — polls each user's IMAP inbox for invoice emails.
-- Auto-detects IMAP settings from email domain
-- Filters by invoice-related subjects and file types
-- Validates attachments are likely invoices before queuing
-- Marks emails as read after processing
-- Uses FIFO queue (ordered by email date)
+
+Polling strategy (layered for reliability):
+  1. UID-based: fetch all UIDs > last_seen_uid — catches everything since last run
+  2. SINCE-date fallback: if no UID stored, search SINCE (last_polled_at - lookback window)
+  3. UNSEEN safety net: always also fetch UNSEEN to catch manually-unread emails
+  4. Message-ID dedup: never queue the same email twice regardless of read/unread state
+
+This means:
+  - Missed emails (server restart, network blip) are caught on next poll
+  - Manually-marked-as-read emails are still processed
+  - No duplicates even if the same email appears in multiple search results
 """
 import email
 import imaplib
@@ -14,7 +20,7 @@ import sys
 import tempfile
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime
+from datetime import datetime, timedelta
 from email.header import decode_header
 from threading import Thread
 
@@ -25,28 +31,32 @@ load_dotenv(override=True)
 from database import SessionLocal
 from models import EmailConfig, ProcessingJob
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [SCHEDULER] %(message)s")
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(name)s] %(levelname)s %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
 log = logging.getLogger("scheduler")
 
 _running = False
 
+# How far back to look for missed emails on first poll or after a gap
+LOOKBACK_HOURS = 48
+
 # Supported invoice attachment types
 INVOICE_EXTENSIONS = {".pdf", ".png", ".jpg", ".jpeg", ".tiff", ".bmp", ".webp", ".heic"}
 
-# Keywords that suggest an email contains an invoice
 INVOICE_SUBJECT_KEYWORDS = [
     "invoice", "inv-", "inv_", "bill", "billing", "receipt", "statement",
     "payment", "purchase order", "po-", "po_", "remittance", "payable",
-    "فاتورة", "rechnung", "factura", "facture",  # multilingual
+    "فاتورة", "rechnung", "factura", "facture",
 ]
 
-# Keywords in filename that suggest it's an invoice
 INVOICE_FILENAME_KEYWORDS = [
     "invoice", "inv", "bill", "receipt", "statement", "payment",
     "purchase", "order", "po", "remittance",
 ]
 
-# Filenames/patterns to SKIP (not invoices)
 SKIP_FILENAME_PATTERNS = [
     "signature", "logo", "banner", "header", "footer", "avatar",
     "profile", "photo", "image", "pic", "thumb", "icon",
@@ -67,92 +77,156 @@ def _decode_str(value: str) -> str:
 
 
 def _is_invoice_subject(subject: str) -> bool:
-    """Check if email subject suggests it contains an invoice."""
     s = subject.lower()
     return any(kw in s for kw in INVOICE_SUBJECT_KEYWORDS)
 
 
 def _is_invoice_filename(filename: str) -> bool:
-    """Check if attachment filename looks like an invoice."""
     if not filename:
         return False
     name_lower = filename.lower()
     ext = os.path.splitext(name_lower)[-1]
-
-    # Must be a supported file type
     if ext not in INVOICE_EXTENSIONS:
         return False
-
-    # Skip obvious non-invoice files
     if any(skip in name_lower for skip in SKIP_FILENAME_PATTERNS):
         return False
-
-    # If filename contains invoice keywords, definitely include
     if any(kw in name_lower for kw in INVOICE_FILENAME_KEYWORDS):
         return True
-
-    # PDFs are almost always invoices in a business context
     if ext == ".pdf":
         return True
-
-    # For images, require invoice keyword in filename or subject
     return False
 
 
-def _build_imap_search(config: EmailConfig) -> str:
-    """Build IMAP search criteria — fetch unread emails, optionally filter by subject."""
-    criteria = ["UNSEEN"]
-    # Add subject keyword filter using OR for multiple keywords
-    # IMAP OR is limited, use a broad search and filter locally
-    return " ".join(criteria)
+def _connect_imap(config: EmailConfig) -> imaplib.IMAP4:
+    """Open and authenticate an IMAP connection."""
+    if config.imap_encryption in ("SSL/TLS", "SSL"):
+        mail = imaplib.IMAP4_SSL(config.imap_host, config.imap_port)
+    else:
+        mail = imaplib.IMAP4(config.imap_host, config.imap_port)
+        if config.imap_encryption == "STARTTLS":
+            mail.starttls()
+    mail.login(config.username, config.password)
+    return mail
+
+
+def _fetch_candidate_uids(mail: imaplib.IMAP4, config: EmailConfig) -> list[bytes]:
+    """
+    Return a deduplicated list of IMAP UIDs to inspect.
+
+    Strategy:
+      A) If we have a last_seen_uid: fetch UID > last_seen_uid (catches everything new)
+      B) SINCE date: look back LOOKBACK_HOURS from last_polled_at (catches missed emails)
+      C) UNSEEN: always include unread (safety net for manually-unread emails)
+
+    All three sets are unioned and deduplicated.
+    """
+    uid_set: set[bytes] = set()
+
+    # A) UID-based: everything after the last processed UID
+    if config.last_seen_uid:
+        try:
+            _, data = mail.uid("search", None, f"UID {config.last_seen_uid}:*")
+            uids = data[0].split() if data[0] else []
+            # Filter out the last_seen_uid itself (IMAP range is inclusive)
+            uids = [u for u in uids if u.decode() != config.last_seen_uid]
+            uid_set.update(uids)
+            log.debug(f"[Poll] UID>{config.last_seen_uid}: {len(uids)} message(s)")
+        except Exception as e:
+            log.warning(f"[Poll] UID search failed: {e}")
+
+    # B) SINCE date: look back from last poll (or LOOKBACK_HOURS if never polled)
+    if config.last_polled_at:
+        since_dt = config.last_polled_at - timedelta(hours=2)  # 2h overlap to catch stragglers
+    else:
+        since_dt = datetime.utcnow() - timedelta(hours=LOOKBACK_HOURS)
+
+    since_str = since_dt.strftime("%d-%b-%Y")
+    try:
+        _, data = mail.uid("search", None, f"SINCE {since_str}")
+        uids = data[0].split() if data[0] else []
+        uid_set.update(uids)
+        log.debug(f"[Poll] SINCE {since_str}: {len(uids)} message(s)")
+    except Exception as e:
+        log.warning(f"[Poll] SINCE search failed: {e}")
+
+    # C) UNSEEN: always include unread emails regardless of date
+    try:
+        _, data = mail.uid("search", None, "UNSEEN")
+        uids = data[0].split() if data[0] else []
+        uid_set.update(uids)
+        log.debug(f"[Poll] UNSEEN: {len(uids)} message(s)")
+    except Exception as e:
+        log.warning(f"[Poll] UNSEEN search failed: {e}")
+
+    # Sort numerically so we process oldest first (FIFO)
+    try:
+        return sorted(uid_set, key=lambda u: int(u))
+    except Exception:
+        return list(uid_set)
+
+
+def _already_queued(db, user_id: str, message_id: str) -> bool:
+    """Check if this Message-ID was already queued/processed."""
+    if not message_id:
+        return False
+    return db.query(ProcessingJob).filter(
+        ProcessingJob.user_id == user_id,
+        ProcessingJob.email_message_id == message_id,
+        ProcessingJob.status.in_(["queued", "processing", "done"]),
+    ).first() is not None
 
 
 def poll_user_emails(config: EmailConfig, db) -> int:
     """Poll one user's IMAP inbox. Returns number of new jobs queued."""
     queued = 0
-    try:
-        # Connect using stored IMAP settings
-        if config.imap_encryption in ("SSL/TLS", "SSL"):
-            mail = imaplib.IMAP4_SSL(config.imap_host, config.imap_port)
-        else:
-            mail = imaplib.IMAP4(config.imap_host, config.imap_port)
-            if config.imap_encryption == "STARTTLS":
-                mail.starttls()
+    max_uid_seen = config.last_seen_uid
 
-        mail.login(config.username, config.password)
+    try:
+        mail = _connect_imap(config)
         mail.select(config.folder or "INBOX")
 
-        # Search for unread emails
-        _, msg_ids = mail.search(None, "UNSEEN")
-        ids = msg_ids[0].split()
+        candidate_uids = _fetch_candidate_uids(mail, config)
 
-        if not ids:
+        if not candidate_uids:
+            log.info(f"[Poll] {config.email}: no new messages")
             mail.logout()
+            _update_poll_timestamp(config, db, max_uid_seen)
             return 0
 
-        log.info(f"Found {len(ids)} unread email(s) for {config.email}")
+        log.info(f"[Poll] {config.email}: {len(candidate_uids)} candidate message(s) to inspect")
 
-        # Process in FIFO order (oldest first) up to max_emails_per_poll
-        for msg_id in ids[:config.max_emails_per_poll]:
+        processed_count = 0
+        for uid in candidate_uids[:config.max_emails_per_poll]:
             try:
-                _, msg_data = mail.fetch(msg_id, "(RFC822)")
+                _, msg_data = mail.uid("fetch", uid, "(RFC822)")
+                if not msg_data or not msg_data[0]:
+                    continue
                 raw = msg_data[0][1]
                 msg = email.message_from_bytes(raw)
 
                 subject = _decode_str(msg.get("Subject", "(no subject)"))
                 sender = _decode_str(msg.get("From", ""))
+                message_id = msg.get("Message-ID", "").strip()
                 date_str = msg.get("Date", "")
 
-                # Check if subject suggests invoice — but don't skip if no subject match
-                # (attachment check is the primary filter)
-                subject_match = _is_invoice_subject(subject)
+                # Track highest UID seen regardless of whether we queue it
+                uid_str = uid.decode() if isinstance(uid, bytes) else str(uid)
+                if not max_uid_seen or int(uid_str) > int(max_uid_seen):
+                    max_uid_seen = uid_str
 
-                attachments_found = 0
+                # Dedup by Message-ID — primary guard against reprocessing
+                if _already_queued(db, config.user_id, message_id):
+                    log.debug(f"[Poll] Skip (already queued): {message_id[:40]} | {subject[:40]}")
+                    processed_count += 1
+                    continue
+
+                subject_match = _is_invoice_subject(subject)
+                attachments_queued = 0
+
                 for part in msg.walk():
                     content_disposition = part.get("Content-Disposition", "")
                     content_type = part.get_content_type()
 
-                    # Check both attachments and inline images
                     is_attachment = "attachment" in content_disposition
                     is_inline_doc = "inline" in content_disposition and content_type in (
                         "application/pdf", "image/png", "image/jpeg", "image/tiff"
@@ -163,51 +237,36 @@ def poll_user_emails(config: EmailConfig, db) -> int:
 
                     filename = part.get_filename()
                     if not filename:
-                        # Generate filename from content type
-                        ext_map = {"application/pdf": ".pdf", "image/png": ".png",
-                                   "image/jpeg": ".jpg", "image/tiff": ".tiff"}
+                        ext_map = {
+                            "application/pdf": ".pdf", "image/png": ".png",
+                            "image/jpeg": ".jpg", "image/tiff": ".tiff",
+                        }
                         ext = ext_map.get(content_type, "")
                         if ext:
-                            filename = f"attachment_{msg_id.decode()}_{attachments_found}{ext}"
+                            filename = f"attachment_{uid_str}_{attachments_queued}{ext}"
                         else:
                             continue
 
                     filename = _decode_str(filename)
 
-                    # Validate it looks like an invoice file
                     if not _is_invoice_filename(filename):
-                        # If subject strongly suggests invoice, include PDFs anyway
                         if subject_match and filename.lower().endswith(".pdf"):
-                            pass  # include it
+                            pass  # subject strongly suggests invoice — include anyway
                         else:
-                            log.debug(f"Skipping non-invoice attachment: {filename}")
+                            log.debug(f"[Poll] Skip non-invoice attachment: {filename}")
                             continue
 
                     safe_name = "".join(c for c in filename if c.isalnum() or c in "._- ")
 
-                    # Check for duplicates
-                    existing = db.query(ProcessingJob).filter(
-                        ProcessingJob.user_id == config.user_id,
-                        ProcessingJob.file_name == safe_name,
-                        ProcessingJob.email_subject == subject,
-                        ProcessingJob.status.in_(["queued", "processing", "done"]),
-                    ).first()
-
-                    if existing:
-                        log.debug(f"Skipping duplicate: {safe_name}")
-                        continue
-
-                    # Save attachment
-                    tmp_dir = tempfile.mkdtemp(prefix="email_invoice_")
-                    file_path = os.path.join(tmp_dir, safe_name)
                     payload = part.get_payload(decode=True)
                     if not payload:
                         continue
 
+                    tmp_dir = tempfile.mkdtemp(prefix="email_invoice_")
+                    file_path = os.path.join(tmp_dir, safe_name)
                     with open(file_path, "wb") as f:
                         f.write(payload)
 
-                    # Queue job
                     job = ProcessingJob(
                         user_id=config.user_id,
                         file_name=safe_name,
@@ -215,35 +274,49 @@ def poll_user_emails(config: EmailConfig, db) -> int:
                         source="email",
                         email_subject=subject,
                         email_sender=sender,
-                        email_message_id=msg.get("Message-ID", ""),
+                        email_message_id=message_id,
                         status="queued",
                     )
                     db.add(job)
                     queued += 1
-                    attachments_found += 1
-                    log.info(f"Queued: {safe_name} | Subject: {subject[:50]} | From: {sender[:40]}")
+                    attachments_queued += 1
+                    log.info(f"[Poll] Queued: {safe_name} | From: {sender[:40]} | Subject: {subject[:50]}")
 
-                # Mark as read after processing
-                if config.mark_as_read:
-                    mail.store(msg_id, "+FLAGS", "\\Seen")
+                # Mark as read only after we've processed all attachments
+                if config.mark_as_read and attachments_queued > 0:
+                    mail.uid("store", uid, "+FLAGS", "\\Seen")
+
+                processed_count += 1
 
             except Exception as msg_err:
-                log.error(f"Error processing message {msg_id}: {msg_err}")
+                log.error(f"[Poll] Error processing UID {uid}: {msg_err}")
                 continue
 
         db.commit()
         mail.logout()
 
-        # Update last polled timestamp
-        config.last_polled_at = datetime.utcnow()
-        db.commit()
+        log.info(f"[Poll] {config.email}: inspected {processed_count}, queued {queued} new job(s)")
 
     except imaplib.IMAP4.error as e:
-        log.error(f"IMAP error for user {config.user_id} ({config.email}): {e}")
+        log.error(f"[Poll] IMAP auth/connection error for {config.email}: {e}")
+    except ConnectionRefusedError:
+        log.error(f"[Poll] Connection refused for {config.email} ({config.imap_host}:{config.imap_port})")
     except Exception as e:
-        log.error(f"Poll error for user {config.user_id}: {e}")
+        log.error(f"[Poll] Unexpected error for {config.email}: {type(e).__name__}: {e}")
 
+    _update_poll_timestamp(config, db, max_uid_seen)
     return queued
+
+
+def _update_poll_timestamp(config: EmailConfig, db, max_uid_seen: str | None):
+    """Persist last_polled_at and last_seen_uid."""
+    try:
+        config.last_polled_at = datetime.utcnow()
+        if max_uid_seen:
+            config.last_seen_uid = max_uid_seen
+        db.commit()
+    except Exception as e:
+        log.warning(f"[Poll] Failed to update poll timestamp for {config.email}: {e}")
 
 
 def run_poll_cycle():
@@ -256,8 +329,8 @@ def run_poll_cycle():
         due_configs = []
         for config in configs:
             if config.last_polled_at:
-                elapsed = (now - config.last_polled_at).total_seconds() / 60
-                if elapsed < config.poll_interval_minutes:
+                elapsed_minutes = (now - config.last_polled_at).total_seconds() / 60
+                if elapsed_minutes < config.poll_interval_minutes:
                     continue
             due_configs.append(config)
 
@@ -266,18 +339,18 @@ def run_poll_cycle():
         if not due_configs:
             return
 
-        # Poll each user's inbox in parallel
+        log.info(f"[Scheduler] Polling {len(due_configs)} account(s)")
+
         def poll_in_thread(config_id: str):
             thread_db = SessionLocal()
             try:
                 cfg = thread_db.query(EmailConfig).filter(EmailConfig.id == config_id).first()
                 if cfg:
-                    log.info(f"Polling emails for user {cfg.user_id} ({cfg.email})")
                     count = poll_user_emails(cfg, thread_db)
                     if count:
-                        log.info(f"Queued {count} new invoice(s) for user {cfg.user_id}")
+                        log.info(f"[Scheduler] {cfg.email}: {count} new invoice(s) queued")
             except Exception as e:
-                log.error(f"Poll thread error for config {config_id}: {e}")
+                log.error(f"[Scheduler] Poll thread error for config {config_id}: {e}")
             finally:
                 thread_db.close()
 
@@ -287,10 +360,10 @@ def run_poll_cycle():
                 try:
                     future.result()
                 except Exception as e:
-                    log.error(f"Poll future error: {e}")
+                    log.error(f"[Scheduler] Poll future error: {e}")
 
     except Exception as e:
-        log.error(f"Poll cycle error: {e}")
+        log.error(f"[Scheduler] Cycle error: {e}")
         try:
             db.close()
         except Exception:
@@ -300,14 +373,14 @@ def run_poll_cycle():
 def scheduler_loop(interval_seconds: int = 30):
     global _running
     _running = True
-    log.info("Email scheduler started")
+    log.info(f"[Scheduler] Email scheduler started (check interval={interval_seconds}s, lookback={LOOKBACK_HOURS}h)")
     while _running:
         try:
             run_poll_cycle()
         except Exception as e:
-            log.error(f"Scheduler error: {e}")
+            log.error(f"[Scheduler] Loop error: {e}")
         time.sleep(interval_seconds)
-    log.info("Email scheduler stopped")
+    log.info("[Scheduler] Email scheduler stopped")
 
 
 def start_scheduler(interval_seconds: int = 30) -> Thread:

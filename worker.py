@@ -22,8 +22,16 @@ load_dotenv(override=True)
 from database import SessionLocal
 from models import Invoice, InvoiceLineItem, ProcessingJob
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [WORKER] %(message)s")
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(name)s] %(levelname)s %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
 log = logging.getLogger("worker")
+# Suppress noisy litellm/httpx debug lines unless explicitly enabled
+logging.getLogger("LiteLLM").setLevel(logging.WARNING)
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 _running = False
 _user_locks: dict[str, Lock] = {}  # one lock per user — prevents parallel AI calls per user
@@ -61,19 +69,103 @@ def _safe_float(v) -> float | None:
 
 def _validate_and_correct(extracted: dict) -> dict:
     """
-    Intelligently validate invoice calculations and auto-correct where possible.
-    Stores a 'validation_issues' list in the returned dict describing what was wrong.
-    Corrected values are marked with '_corrected' suffix in validation_issues.
+    Validate invoice calculations and auto-correct where possible.
+    Also strips misclassified summary rows (discount/tax/total) from line_items.
     """
-    TOLERANCE = 0.02  # 2 cents tolerance for rounding differences
+    TOLERANCE = 0.02
     issues = []
 
     def sf(v):
         return _safe_float(v)
 
+    # ── 0. Strip misclassified summary rows from line_items ───────────────────
+    # Only strip a row if its description is PURELY a summary label AND it has no qty/price.
+    # Use word-boundary matching to avoid false positives like "delivery service" or "total hours".
+    import re as _re
+
+    # These must match the WHOLE description (or be the dominant word) — not substrings of real items
+    SUMMARY_EXACT = {
+        "discount", "rebate", "promo", "promotion", "coupon", "early payment discount",
+        "tax", "vat", "gst", "hst", "pst", "sales tax", "withholding tax", "income tax",
+        "shipping", "freight", "delivery", "postage", "shipping & handling",
+        "handling", "packaging",
+        "subtotal", "sub total", "sub-total",
+        "total", "grand total", "invoice total",
+        "amount due", "balance due", "balance",
+        "amount paid", "payment received", "deposit",
+        "rounding", "rounding adjustment", "adjustment",
+    }
+
+    def _is_summary_row(desc: str, qty, price) -> bool:
+        """
+        A row is a summary row ONLY if:
+        1. Its description exactly matches (or starts with) a known summary keyword, AND
+        2. It has no quantity AND no unit_price (pure adjustment row)
+        """
+        if qty is not None or price is not None:
+            # Has qty or price → it's a real product/service line, never strip it
+            return False
+        d = desc.strip().lower()
+        # Exact match
+        if d in SUMMARY_EXACT:
+            return True
+        # Starts with a summary keyword followed by space/colon/percent/number
+        for kw in SUMMARY_EXACT:
+            if _re.match(rf'^{_re.escape(kw)}[\s:(%\-]', d):
+                return True
+        return False
+
+    raw_items = extracted.get("line_items") or []
+    clean_items = []
+    rescued = {"discount_total": 0.0, "tax_amount": 0.0, "shipping": 0.0, "handling": 0.0}
+
+    for item in raw_items:
+        desc = (item.get("description") or "").lower().strip()
+        qty = sf(item.get("quantity"))
+        price = sf(item.get("unit_price"))
+        total = sf(item.get("total"))
+
+        if _is_summary_row(desc, qty, price):
+            # Rescue the value into the correct top-level field
+            if any(kw in desc for kw in ("discount", "rebate", "promo", "coupon")):
+                val = total or sf(item.get("discount_amount")) or 0.0
+                if val and val > 0:
+                    rescued["discount_total"] += abs(val)
+                    log.info(f"[Validate] Rescued discount row '{item.get('description')}' → discount_total += {abs(val)}")
+            elif any(kw in desc for kw in ("tax", "vat", "gst", "hst", "pst", "withholding")):
+                val = total or sf(item.get("tax_amount")) or 0.0
+                if val and val > 0:
+                    rescued["tax_amount"] += abs(val)
+                    log.info(f"[Validate] Rescued tax row '{item.get('description')}' → tax_amount += {abs(val)}")
+            elif any(kw in desc for kw in ("shipping", "freight", "postage")):
+                val = total or 0.0
+                if val and val > 0:
+                    rescued["shipping"] += abs(val)
+                    log.info(f"[Validate] Rescued shipping row '{item.get('description')}' → shipping += {abs(val)}")
+            elif any(kw in desc for kw in ("handling", "packaging")):
+                val = total or 0.0
+                if val and val > 0:
+                    rescued["handling"] += abs(val)
+                    log.info(f"[Validate] Rescued handling row '{item.get('description')}' → handling += {abs(val)}")
+            else:
+                log.info(f"[Validate] Removed summary row from line_items: '{item.get('description')}'")
+        else:
+            clean_items.append(item)
+
+    extracted["line_items"] = clean_items
+
+    # Apply rescued values to top-level fields (only if not already set)
+    if rescued["discount_total"] > 0 and not sf(extracted.get("discount_total")):
+        extracted["discount_total"] = round(rescued["discount_total"], 2)
+    if rescued["tax_amount"] > 0 and not sf(extracted.get("tax_amount")):
+        extracted["tax_amount"] = round(rescued["tax_amount"], 2)
+    if rescued["shipping"] > 0 and not sf(extracted.get("shipping")):
+        extracted["shipping"] = round(rescued["shipping"], 2)
+    if rescued["handling"] > 0 and not sf(extracted.get("handling")):
+        extracted["handling"] = round(rescued["handling"], 2)
+
     # ── 1. Recompute line item totals ─────────────────────────────────────────
-    line_items = extracted.get("line_items") or []
-    for idx, item in enumerate(line_items):
+    for idx, item in enumerate(clean_items):
         qty = sf(item.get("quantity"))
         price = sf(item.get("unit_price"))
         discount_pct = sf(item.get("discount_percent"))
@@ -84,12 +176,10 @@ def _validate_and_correct(extracted: dict) -> dict:
 
         if qty is not None and price is not None:
             base = qty * price
-            # Apply discount
             if discount_amt is not None:
                 base -= discount_amt
             elif discount_pct is not None:
                 base -= base * discount_pct / 100
-            # Apply line-level tax
             if tax_amt is not None:
                 computed = base + tax_amt
             elif tax_pct is not None:
@@ -110,8 +200,8 @@ def _validate_and_correct(extracted: dict) -> dict:
 
     # ── 2. Recompute subtotal from line items ─────────────────────────────────
     computed_subtotal = None
-    if line_items:
-        totals = [sf(item.get("total")) for item in line_items]
+    if clean_items:
+        totals = [sf(item.get("total")) for item in clean_items]
         if all(t is not None for t in totals):
             computed_subtotal = round(sum(totals), 2)  # type: ignore[arg-type]
 
@@ -158,21 +248,21 @@ def _validate_and_correct(extracted: dict) -> dict:
     computed_total = round(
         effective_subtotal - discount_total + effective_tax + shipping + handling + other, 2
     )
-    stated_total = sf(extracted.get("total_amount"))
+    stated_total_amt = sf(extracted.get("total_amount"))
 
-    if stated_total is not None and abs(computed_total - stated_total) > TOLERANCE:
+    if stated_total_amt is not None and abs(computed_total - stated_total_amt) > TOLERANCE:
         issues.append({
             "field": "total_amount",
-            "original": stated_total,
+            "original": stated_total_amt,
             "corrected": computed_total,
             "note": (
                 f"subtotal({effective_subtotal}) - discount({discount_total}) "
                 f"+ tax({effective_tax}) + shipping({shipping}) + other({other}) "
-                f"= {computed_total}, invoice shows {stated_total}"
+                f"= {computed_total}, invoice shows {stated_total_amt}"
             ),
         })
         extracted["total_amount"] = computed_total
-    elif stated_total is None and effective_subtotal:
+    elif stated_total_amt is None and effective_subtotal:
         extracted["total_amount"] = computed_total
 
     # ── 5. Validate amount_due ────────────────────────────────────────────────
@@ -193,6 +283,8 @@ def _validate_and_correct(extracted: dict) -> dict:
         extracted["amount_due"] = computed_due
 
     extracted["validation_issues"] = issues
+    if issues:
+        log.info(f"[Validate] {len(issues)} correction(s): {[i['field'] for i in issues]}")
     return extracted
 
 
@@ -280,26 +372,22 @@ def _extract_ocr(file_path: str) -> str:
     ext = os.path.splitext(file_path)[-1].lower()
     ollama_url = os.environ.get("OLLAMA_BASE_URL", "http://110.39.187.178:11434")
 
+    log.info(f"[OCR] Extracting text from {os.path.basename(file_path)} (type={ext})")
+
     if ext == ".pdf":
-        return PDFTextExtractor()._run(file_path)
+        result = PDFTextExtractor()._run(file_path)
+        log.info(f"[OCR] PDF extraction done — {len(result)} chars")
+        return result
 
     # Try LLaVA vision model first, fall back to Tesseract
+    log.info(f"[OCR] Trying LLaVA vision model at {ollama_url}")
     result = extract_image_with_llava(file_path, ollama_url)
     if result.startswith("Error"):
+        log.warning(f"[OCR] LLaVA failed ({result[:100]}), falling back to Tesseract")
         result = ImageTextExtractor()._run(file_path)
-    return result
-    from invoice_processing_automation_system.tools.custom_tool import (
-        PDFTextExtractor, ImageTextExtractor, extract_image_with_llava
-    )
-    ext = os.path.splitext(file_path)[-1].lower()
-    ollama_url = os.environ.get("OLLAMA_BASE_URL", "http://110.39.187.178:11434")
-
-    if ext == ".pdf":
-        return PDFTextExtractor()._run(file_path)
-
-    result = extract_image_with_llava(file_path, ollama_url)
-    if result.startswith("Error"):
-        result = ImageTextExtractor()._run(file_path)
+        log.info(f"[OCR] Tesseract extraction done — {len(result)} chars")
+    else:
+        log.info(f"[OCR] LLaVA extraction done — {len(result)} chars")
     return result
 
 
@@ -320,18 +408,22 @@ def _resolve_model_config(user_id: str | None) -> "ModelConfig":
                 user_model = ucfg.model_name
                 is_ollama = user_model.startswith("ollama/")
                 default = ModelConfig.from_env()
-                # Reject "***" — masked placeholder that was never properly saved
                 real_key = ucfg.api_key if (ucfg.api_key and ucfg.api_key != "***") else None
                 resolved = ModelConfig(
                     model=user_model,
                     base_url=ucfg.base_url or (default.base_url if is_ollama else None),
                     api_key=real_key or (None if is_ollama else default.api_key),
                 )
-                log.info(f"User {user_id} model config: {resolved.model} (key={'set' if resolved.api_key else 'none'})")
+                log.info(f"[Model] User {user_id[:8]}… → custom config: {resolved.describe()}")
                 return resolved
+            else:
+                log.info(f"[Model] User {user_id[:8]}… → no custom config, using system default")
         except Exception as e:
-            log.warning(f"Could not load user model config for {user_id}: {e}")
-    return ModelConfig.from_env()
+            log.warning(f"[Model] Could not load user model config for {user_id}: {e} — falling back to env default")
+
+    cfg = ModelConfig.from_env()
+    log.info(f"[Model] Using system default: {cfg.describe()}")
+    return cfg
 
 
 
@@ -339,48 +431,54 @@ def _run_crew(ocr_text: str, file_path: str, user_id: str = None) -> dict | None
     from invoice_processing_automation_system.crew import InvoiceProcessingAutomationSystemCrew
 
     model_cfg = _resolve_model_config(user_id)
-    log.info(f"Job using model: {model_cfg.model} (user={user_id})")
+    log.info(f"[Crew] Starting invoice extraction — model: {model_cfg.describe()}, file: {os.path.basename(file_path)}, ocr_chars: {len(ocr_text)}")
 
     crew_instance = (
         InvoiceProcessingAutomationSystemCrew()
         .set_model_config(model_cfg)
     )
-    result = crew_instance.crew_minimal(
-        erp_system="pending_approval",
-        notification_channel="none",
-    ).kickoff(inputs={
-        "intake_source": f"Files to process:\n{file_path}",
-        "ocr_text": ocr_text,
-        "erp_system": "pending_approval",
-        "notification_channel": "none",
-    })
+
+    try:
+        result = crew_instance.crew_minimal(
+            erp_system="pending_approval",
+            notification_channel="none",
+        ).kickoff(inputs={
+            "intake_source": f"Files to process:\n{file_path}",
+            "ocr_text": ocr_text,
+            "erp_system": "pending_approval",
+            "notification_channel": "none",
+        })
+    except Exception as e:
+        log.error(f"[Crew] Crew kickoff failed with model {model_cfg.describe()}: {e}")
+        raise
 
     tasks_output = result.tasks_output or []
+    log.info(f"[Crew] Crew finished — {len(tasks_output)} task outputs")
 
     # Task order: [0] intake, [1] extraction, [2] validation
     # Try index 1 (structured_data_extraction) first — most reliable
     if len(tasks_output) > 1:
         parsed = _parse_json(tasks_output[1].raw)
         if parsed and isinstance(parsed, dict):
-            log.info("Parsed invoice JSON from task[1] (structured_data_extraction)")
+            log.info(f"[Crew] ✓ Parsed invoice JSON from task[1] (structured_data_extraction) — keys: {list(parsed.keys())[:6]}")
             return parsed
 
-    # Fallback: scan all task outputs for the one that contains valid invoice JSON
+    # Fallback: scan all task outputs for valid invoice JSON
     for i, task_out in enumerate(tasks_output):
         parsed = _parse_json(task_out.raw)
         if parsed and isinstance(parsed, dict) and ("invoice_number" in parsed or "sender" in parsed or "line_items" in parsed):
-            log.info(f"Parsed invoice JSON from task[{i}] fallback")
+            log.info(f"[Crew] ✓ Parsed invoice JSON from task[{i}] fallback")
             return parsed
 
     # Last resort: try the final crew result
     parsed = _parse_json(str(result.raw))
     if parsed and isinstance(parsed, dict):
-        log.info("Parsed invoice JSON from result.raw fallback")
+        log.info("[Crew] ✓ Parsed invoice JSON from result.raw fallback")
         return parsed
 
-    log.error(f"Could not extract invoice JSON. tasks_output count={len(tasks_output)}")
-    if tasks_output:
-        log.error(f"Last task raw (first 500 chars): {tasks_output[-1].raw[:500]}")
+    log.error(f"[Crew] ✗ Could not extract invoice JSON from any task output (count={len(tasks_output)})")
+    for i, t in enumerate(tasks_output):
+        log.error(f"[Crew]   task[{i}] raw preview: {t.raw[:300]!r}")
     return None
 
 
@@ -517,7 +615,7 @@ def save_invoice_to_db(db, user_id: str, extracted: dict, file_name: str, source
 
 def process_job(job: ProcessingJob, db) -> bool:
     """Process a single queued job with retry logic."""
-    log.info(f"Processing job {job.id}: {job.file_name} (attempt {job.retry_count + 1}/{MAX_JOB_RETRIES})")
+    log.info(f"[Job {job.id[:8]}] ── START ── file={job.file_name} source={job.source} attempt={job.retry_count + 1}/{MAX_JOB_RETRIES}")
 
     job.status = "processing"
     job.started_at = datetime.utcnow()
@@ -525,43 +623,55 @@ def process_job(job: ProcessingJob, db) -> bool:
 
     try:
         if not job.file_path or not os.path.exists(job.file_path):
-            # Try to re-download from email if we have the message ID
             if job.email_message_id and job.source == "email":
-                log.info(f"Job {job.id}: temp file missing, attempting re-download from email")
+                log.warning(f"[Job {job.id[:8]}] Temp file missing — attempting re-download from email")
                 recovered = _redownload_attachment(job, db)
                 if not recovered:
-                    raise FileNotFoundError(f"Temp file gone and re-download failed: {job.file_path}")
+                    raise FileNotFoundError(f"Temp file gone and email re-download failed: {job.file_path}")
+                log.info(f"[Job {job.id[:8]}] Re-download successful: {job.file_path}")
             else:
-                raise FileNotFoundError(f"File not found and no email source to recover from: {job.file_path}")
+                raise FileNotFoundError(f"File not found (no email source to recover from): {job.file_path}")
 
-        # OCR with retry
-        log.info(f"Job {job.id}: starting OCR")
+        # ── Step 1: OCR ───────────────────────────────────────────────────────
+        log.info(f"[Job {job.id[:8]}] Step 1/3 — OCR")
         ocr_text = _with_retry(
             lambda: _extract_ocr_async(job.file_path),
-            max_attempts=2, delay=1.0, label=f"OCR job {job.id}"
+            max_attempts=2, delay=1.0, label=f"OCR job {job.id[:8]}"
         )
+        log.info(f"[Job {job.id[:8]}] OCR complete — {len(ocr_text)} chars extracted")
 
-        # AI crew with per-user lock and retry
+        if len(ocr_text.strip()) < 20:
+            log.warning(f"[Job {job.id[:8]}] OCR returned very little text ({len(ocr_text)} chars) — extraction may be poor")
+
+        # ── Step 2: AI extraction ─────────────────────────────────────────────
         user_lock = _get_user_lock(job.user_id)
-        log.info(f"Job {job.id}: waiting for user AI slot")
+        log.info(f"[Job {job.id[:8]}] Step 2/3 — AI extraction (waiting for user slot)")
         with user_lock:
-            log.info(f"Job {job.id}: running AI crew")
+            log.info(f"[Job {job.id[:8]}] AI slot acquired — running crew")
             extracted = _with_retry(
                 lambda: _run_crew(ocr_text, job.file_path, user_id=job.user_id),
-                max_attempts=2, delay=5.0, label=f"AI crew job {job.id}"
+                max_attempts=2, delay=5.0, label=f"AI crew job {job.id[:8]}"
             )
 
         if not extracted:
-            raise ValueError("AI crew returned no structured data")
+            raise ValueError("AI crew returned no structured data — check model connectivity and OCR output")
 
-        # Validate calculations and auto-correct where possible
+        log.info(f"[Job {job.id[:8]}] AI extraction complete — invoice_number={extracted.get('invoice_number')!r} total={extracted.get('total_amount')!r}")
+
+        # ── Step 3: Validate & save ───────────────────────────────────────────
+        log.info(f"[Job {job.id[:8]}] Step 3/3 — Validation & DB save")
         extracted = _validate_and_correct(extracted)
+        issues = extracted.get("validation_issues", [])
+        if issues:
+            log.info(f"[Job {job.id[:8]}] Validation: {len(issues)} calc fix(es) applied — {[i['field'] for i in issues]}")
+        else:
+            log.info(f"[Job {job.id[:8]}] Validation: all calculations OK")
 
-        # Save to DB
         try:
             invoice = save_invoice_to_db(db, job.user_id, extracted, job.file_name, job.source)
         except Exception as save_err:
             db.rollback()
+            log.error(f"[Job {job.id[:8]}] DB save failed: {save_err}")
             raise save_err
 
         job.status = "done"
@@ -569,28 +679,29 @@ def process_job(job: ProcessingJob, db) -> bool:
         job.completed_at = datetime.utcnow()
         db.commit()
 
-        log.info(f"Job {job.id} done → Invoice {invoice.id} (PENDING)")
+        elapsed = (job.completed_at - job.started_at).total_seconds()
+        log.info(f"[Job {job.id[:8]}] ── DONE ── invoice={invoice.id[:8]} status=PENDING elapsed={elapsed:.1f}s")
         return True
 
     except Exception as e:
-        log.error(f"Job {job.id} failed: {e}")
+        import traceback
+        log.error(f"[Job {job.id[:8]}] ── FAILED ── {type(e).__name__}: {e}")
+        log.debug(f"[Job {job.id[:8]}] Traceback:\n{traceback.format_exc()}")
         try:
             db.rollback()
             job.retry_count = (job.retry_count or 0) + 1
             if job.retry_count < MAX_JOB_RETRIES:
-                # Requeue for retry
                 job.status = "queued"
-                job.error_message = f"Attempt {job.retry_count} failed: {str(e)[:300]}"
-                log.info(f"Job {job.id} requeued (attempt {job.retry_count}/{MAX_JOB_RETRIES})")
+                job.error_message = f"Attempt {job.retry_count} failed: {type(e).__name__}: {str(e)[:250]}"
+                log.info(f"[Job {job.id[:8]}] Requeued for retry ({job.retry_count}/{MAX_JOB_RETRIES})")
             else:
-                # Permanently failed
                 job.status = "failed"
-                job.error_message = f"Failed after {MAX_JOB_RETRIES} attempts. Last error: {str(e)[:300]}"
-                log.error(f"Job {job.id} permanently failed after {MAX_JOB_RETRIES} attempts")
+                job.error_message = f"Permanently failed after {MAX_JOB_RETRIES} attempts. Last: {type(e).__name__}: {str(e)[:250]}"
+                log.error(f"[Job {job.id[:8]}] Permanently failed after {MAX_JOB_RETRIES} attempts")
             job.completed_at = datetime.utcnow()
             db.commit()
         except Exception as inner:
-            log.error(f"Failed to update job status: {inner}")
+            log.error(f"[Job {job.id[:8]}] Failed to update job status after failure: {inner}")
         return False
 
 

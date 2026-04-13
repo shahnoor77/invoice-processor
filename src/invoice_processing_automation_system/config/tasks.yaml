@@ -43,6 +43,22 @@ structured_data_extraction:
     - Sender bank = where payment should be SENT TO
     - Receiver bank = buyer's bank details (if shown)
 
+    LINE ITEMS RULES — critical, read carefully:
+    - line_items MUST contain ONLY actual products or services being sold/billed
+    - Each line item must have a description of what was sold (product name, service name, hours, etc.)
+    - DO NOT include these as line items — put them in their dedicated top-level fields instead:
+        * Discount rows (e.g. "Discount 10%", "Early payment discount", "Promo") → discount_total / discount_percent
+        * Tax rows (e.g. "VAT 20%", "GST", "Sales Tax", "Tax") → tax_amount / tax_rate / tax_type
+        * Shipping / delivery / freight rows → shipping
+        * Handling / packaging rows → handling
+        * Subtotal summary rows → subtotal
+        * Total rows → total_amount
+        * Amount due / balance due rows → amount_due
+        * Amount paid / payment received rows → amount_paid
+        * Deposit rows → deposit
+    - A line item row that has no unit_price and no quantity is almost certainly a summary row — do NOT include it
+    - If a row says "Discount", "Tax", "VAT", "GST", "Shipping", "Total", "Subtotal", "Balance" — it is NOT a line item
+
     STRICT RULES:
     - INVOICE NUMBER is critical — search for: INV-, #, No., Number, Invoice No, Ref, Reference,
       Invoice ID. Copy EXACTLY including prefix. Never null if any reference exists.
@@ -50,7 +66,6 @@ structured_data_extraction:
     - Dates must be YYYY-MM-DD format
     - Numeric fields: numbers only, no currency symbols
     - If a field is not in the text, set it to null
-    - Copy ALL line items — do not skip any
     - Do NOT perform any arithmetic
 
     Output ONLY valid JSON, no explanation, no markdown:
@@ -85,9 +100,15 @@ structured_data_extraction:
       "reference": null,
       "line_items": [
         {
-          "description": null, "quantity": null, "unit": null,
-          "unit_price": null, "discount_percent": null, "discount_amount": null,
-          "tax_percent": null, "tax_amount": null, "total": null
+          "description": null,
+          "quantity": null,
+          "unit": null,
+          "unit_price": null,
+          "discount_percent": null,
+          "discount_amount": null,
+          "tax_percent": null,
+          "tax_amount": null,
+          "total": null
         }
       ],
       "subtotal": null,
@@ -111,6 +132,8 @@ structured_data_extraction:
     }
   expected_output: >
     Valid JSON only. Values copied verbatim from the raw invoice text.
+    line_items contains ONLY actual products/services — never discount, tax, shipping, or summary rows.
+    Discounts go in discount_total/discount_percent. Tax goes in tax_amount/tax_rate.
     Sender and receiver must be separate with their own bank details.
     Invoice number must never be null if any reference exists.
     All financial fields extracted. Null only for truly missing fields.

@@ -70,6 +70,7 @@ class EmailConfig(Base):
 
     # Tracking
     last_polled_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    last_seen_uid: Mapped[Optional[str]] = mapped_column(String, nullable=True)  # highest IMAP UID seen
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 

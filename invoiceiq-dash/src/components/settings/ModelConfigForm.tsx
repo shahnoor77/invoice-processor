@@ -1,16 +1,16 @@
 import { useState, useEffect } from 'react';
 import { motion } from 'framer-motion';
-import { Loader2, RotateCcw, CheckCircle, Info } from 'lucide-react';
+import { Loader2, RotateCcw, CheckCircle, Info, Server } from 'lucide-react';
 import { toast } from 'sonner';
 import { apiGetModelConfig, apiSaveModelConfig, apiResetModelConfig } from '@/lib/api';
 
 const PRESET_MODELS = [
-  { label: 'Ollama qwen3.5:9b (default)', value: 'ollama/qwen3.5:9b', needsKey: false, needsUrl: true },
-  { label: 'Ollama llama3.1:8b', value: 'ollama/llama3.1:8b', needsKey: false, needsUrl: true },
-  { label: 'Groq llama-3.3-70b', value: 'groq/llama-3.3-70b-versatile', needsKey: true, needsUrl: false },
+  { label: 'System Default (from server config)', value: '', needsKey: false, needsUrl: false, isDefault: true },
+  { label: 'Groq llama-3.3-70b (fast, free)', value: 'groq/llama-3.3-70b-versatile', needsKey: true, needsUrl: false },
   { label: 'Gemini 2.0 Flash', value: 'gemini/gemini-2.0-flash', needsKey: true, needsUrl: false },
   { label: 'OpenAI GPT-4o Mini', value: 'openai/gpt-4o-mini', needsKey: true, needsUrl: false },
-  { label: 'Custom', value: 'custom', needsKey: true, needsUrl: true },
+  { label: 'Ollama (custom server)', value: 'ollama/custom', needsKey: false, needsUrl: true },
+  { label: 'Custom model', value: 'custom', needsKey: true, needsUrl: true },
 ];
 
 interface Props {
@@ -31,33 +31,63 @@ export function ModelConfigForm({ onBack, onComplete }: Props) {
     apiGetModelConfig().then((cfg: any) => {
       setConfig(cfg);
       if (cfg.model_name) {
-        setModelName(cfg.model_name);
-        const preset = PRESET_MODELS.find(p => p.value === cfg.model_name);
-        setSelectedPreset(preset ? preset.value : 'custom');
+        // Match to a known preset
+        const knownPreset = PRESET_MODELS.find(p => !p.isDefault && p.value !== 'custom' && p.value !== 'ollama/custom' && p.value === cfg.model_name);
+        if (knownPreset) {
+          setSelectedPreset(knownPreset.value);
+        } else if (cfg.model_name.startsWith('ollama/')) {
+          setSelectedPreset('ollama/custom');
+          setModelName(cfg.model_name);
+        } else {
+          setSelectedPreset('custom');
+          setModelName(cfg.model_name);
+        }
+        if (cfg.base_url) setBaseUrl(cfg.base_url);
+        // Never pre-fill api_key — backend masks it as "***"
       } else {
-        setSelectedPreset('ollama/qwen3.5:9b');
+        setSelectedPreset(''); // system default
       }
-      if (cfg.base_url) setBaseUrl(cfg.base_url);
-      // Never pre-fill the key field — the backend masks it as "***"
-      // User must re-enter it only if they want to change it
     }).catch(() => {});
   }, []);
 
   const preset = PRESET_MODELS.find(p => p.value === selectedPreset);
+  const isDefault = selectedPreset === '';
 
   const handlePresetChange = (value: string) => {
     setSelectedPreset(value);
-    if (value !== 'custom') setModelName(value);
-    else setModelName('');
+    setModelName('');
+    setApiKey('');
+    setBaseUrl('');
   };
 
   const handleSave = async () => {
+    if (isDefault) {
+      // Reset to system default
+      setResetting(true);
+      try {
+        await apiResetModelConfig();
+        toast.success('Using system default model');
+        onComplete();
+      } catch (e: any) {
+        toast.error(e.message);
+      }
+      setResetting(false);
+      return;
+    }
+
     setSaving(true);
     try {
-      const finalModel = selectedPreset === 'custom' ? modelName : selectedPreset;
+      let finalModel = selectedPreset;
+      if (selectedPreset === 'custom' || selectedPreset === 'ollama/custom') {
+        finalModel = modelName.trim();
+      }
+      if (!finalModel) {
+        toast.error('Please enter a model name');
+        setSaving(false);
+        return;
+      }
       await apiSaveModelConfig({
-        model_name: finalModel || null,
-        // Only send api_key if user typed something — empty string means "keep existing"
+        model_name: finalModel,
         api_key: apiKey.trim() || null,
         base_url: baseUrl.trim() || null,
       });
@@ -74,8 +104,9 @@ export function ModelConfigForm({ onBack, onComplete }: Props) {
     try {
       await apiResetModelConfig();
       setModelName(''); setApiKey(''); setBaseUrl('');
-      setSelectedPreset('ollama/qwen3.5:9b');
-      toast.success('Reset to system defaults');
+      setSelectedPreset('');
+      setConfig((c: any) => c ? { ...c, model_name: null, api_key: null, base_url: null } : c);
+      toast.success('Reset to system default');
     } catch (e: any) {
       toast.error(e.message);
     }
@@ -90,20 +121,23 @@ export function ModelConfigForm({ onBack, onComplete }: Props) {
       <div className="mb-6">
         <h2 className="text-xl font-bold text-foreground">AI Model Configuration</h2>
         <p className="text-muted-foreground text-sm mt-1">
-          Choose the LLM used for invoice extraction. Leave blank to use the system default.
+          Override the AI model for your account. Leave on system default if unsure.
         </p>
       </div>
 
+      {/* Current effective model info */}
       {config && (
         <div className="mb-4 p-3 rounded-lg bg-surface-2 border border-border text-sm text-muted-foreground flex items-center gap-2">
-          <Info size={14} />
-          Current effective model: <strong className="text-foreground">{config.effective_model}</strong>
+          <Server size={14} className="flex-shrink-0" />
+          <span>Active model: <strong className="text-foreground">{config.effective_model}</strong>
+            {!config.model_name && <span className="ml-1 text-xs text-primary">(system default)</span>}
+          </span>
         </div>
       )}
 
       <div className="space-y-4">
         <div>
-          <label className={labelClass}>Model Preset</label>
+          <label className={labelClass}>Model</label>
           <select value={selectedPreset} onChange={e => handlePresetChange(e.target.value)} className={inputClass}>
             {PRESET_MODELS.map(p => (
               <option key={p.value} value={p.value}>{p.label}</option>
@@ -111,53 +145,91 @@ export function ModelConfigForm({ onBack, onComplete }: Props) {
           </select>
         </div>
 
-        {selectedPreset === 'custom' && (
-          <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }}>
-            <label className={labelClass}>Model Name</label>
-            <input value={modelName} onChange={e => setModelName(e.target.value)}
-              placeholder="e.g. ollama/mistral:7b or groq/mixtral-8x7b" className={inputClass} />
-            <p className="text-xs text-muted-foreground mt-1">Format: provider/model-name</p>
+        {/* System default — no extra fields needed */}
+        {isDefault && (
+          <div className="p-3 rounded-lg bg-primary/5 border border-primary/20 text-xs text-muted-foreground flex items-start gap-2">
+            <Info size={13} className="mt-0.5 flex-shrink-0 text-primary" />
+            <span>The server's configured model will be used. No API key required from you.</span>
+          </div>
+        )}
+
+        {/* Custom ollama — needs base URL and model name */}
+        {selectedPreset === 'ollama/custom' && (
+          <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }} className="space-y-3">
+            <div>
+              <label className={labelClass}>Model Name</label>
+              <input value={modelName} onChange={e => setModelName(e.target.value)}
+                placeholder="e.g. ollama/llama3.1:8b" className={inputClass} />
+            </div>
+            <div>
+              <label className={labelClass}>Ollama Base URL</label>
+              <input value={baseUrl} onChange={e => setBaseUrl(e.target.value)}
+                placeholder="http://your-ollama-server:11434" className={inputClass} />
+              <p className="text-xs text-muted-foreground mt-1">Leave blank to use the server's default Ollama URL</p>
+            </div>
           </motion.div>
         )}
 
-        {preset?.needsKey && (
+        {/* Custom model — needs model name + api key + optional url */}
+        {selectedPreset === 'custom' && (
+          <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }} className="space-y-3">
+            <div>
+              <label className={labelClass}>Model Name</label>
+              <input value={modelName} onChange={e => setModelName(e.target.value)}
+                placeholder="e.g. groq/mixtral-8x7b or openai/gpt-4o" className={inputClass} />
+              <p className="text-xs text-muted-foreground mt-1">Format: provider/model-name</p>
+            </div>
+            <div>
+              <label className={labelClass}>API Key</label>
+              <input type="password" value={apiKey} onChange={e => setApiKey(e.target.value)}
+                placeholder={config?.api_key ? 'Leave blank to keep existing key' : 'Your API key'} className={inputClass} />
+            </div>
+            <div>
+              <label className={labelClass}>Base URL (optional)</label>
+              <input value={baseUrl} onChange={e => setBaseUrl(e.target.value)}
+                placeholder="Only needed for self-hosted endpoints" className={inputClass} />
+            </div>
+          </motion.div>
+        )}
+
+        {/* Cloud preset — only needs API key */}
+        {preset?.needsKey && !preset?.needsUrl && selectedPreset !== 'custom' && (
           <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }}>
             <label className={labelClass}>API Key</label>
             <input type="password" value={apiKey} onChange={e => setApiKey(e.target.value)}
-              placeholder={config?.api_key ? "Leave blank to keep existing key" : "Your API key"} className={inputClass} />
-            {config?.api_key && <p className="text-xs text-success mt-1 flex items-center gap-1"><CheckCircle size={11} /> API key saved</p>}
-          </motion.div>
-        )}
-
-        {(preset?.needsUrl || selectedPreset === 'custom') && (
-          <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }}>
-            <label className={labelClass}>Base URL (Ollama server)</label>
-            <input value={baseUrl} onChange={e => setBaseUrl(e.target.value)}
-              placeholder="http://your-ollama-server:11434" className={inputClass} />
-            <p className="text-xs text-muted-foreground mt-1">Leave blank to use the system default Ollama URL</p>
+              placeholder={config?.api_key ? 'Leave blank to keep existing key' : 'Your API key'} className={inputClass} />
+            {config?.api_key && (
+              <p className="text-xs text-success mt-1 flex items-center gap-1">
+                <CheckCircle size={11} /> API key already saved
+              </p>
+            )}
           </motion.div>
         )}
       </div>
 
       <div className="flex items-center justify-between pt-6">
         <div className="flex gap-2">
-          <button type="button" onClick={onBack} className="px-4 h-10 rounded-lg border border-border text-sm font-medium text-foreground hover:bg-muted transition-all">
+          <button type="button" onClick={onBack}
+            className="px-4 h-10 rounded-lg border border-border text-sm font-medium text-foreground hover:bg-muted transition-all">
             ← Back
           </button>
-          <button type="button" onClick={handleReset} disabled={resetting}
-            className="px-4 h-10 rounded-lg border border-border text-sm font-medium text-muted-foreground hover:bg-muted transition-all flex items-center gap-2 disabled:opacity-50">
-            {resetting ? <Loader2 size={14} className="animate-spin" /> : <RotateCcw size={14} />}
-            Use System Default
-          </button>
+          {!isDefault && (
+            <button type="button" onClick={handleReset} disabled={resetting}
+              className="px-4 h-10 rounded-lg border border-border text-sm font-medium text-muted-foreground hover:bg-muted transition-all flex items-center gap-2 disabled:opacity-50">
+              {resetting ? <Loader2 size={14} className="animate-spin" /> : <RotateCcw size={14} />}
+              Use System Default
+            </button>
+          )}
         </div>
         <div className="flex gap-2">
-          <button type="button" onClick={onComplete} className="px-4 h-10 rounded-lg border border-border text-sm font-medium text-muted-foreground hover:bg-muted transition-all">
+          <button type="button" onClick={onComplete}
+            className="px-4 h-10 rounded-lg border border-border text-sm font-medium text-muted-foreground hover:bg-muted transition-all">
             Skip
           </button>
-          <button type="button" onClick={handleSave} disabled={saving}
+          <button type="button" onClick={handleSave} disabled={saving || resetting}
             className="px-6 h-10 rounded-lg bg-primary text-primary-foreground text-sm font-medium hover:bg-primary-dark transition-all active:scale-[0.97] disabled:opacity-50 flex items-center gap-2">
-            {saving && <Loader2 size={14} className="animate-spin" />}
-            Save & Finish →
+            {(saving || resetting) && <Loader2 size={14} className="animate-spin" />}
+            {isDefault ? 'Use Default →' : 'Save & Finish →'}
           </button>
         </div>
       </div>
