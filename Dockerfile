@@ -42,8 +42,7 @@ COPY --from=frontend-builder /app/invoiceiq-dash/dist ./static
 # Expose port 80 — uvicorn serves both API and React static files
 EXPOSE 80
 
-# Environment defaults — override at runtime via docker-compose or -e flags
-ENV OPENAI_API_KEY=fake-key
+# Non-sensitive runtime defaults — all overridable via docker-compose env_file
 ENV OLLAMA_BASE_URL=http://host.docker.internal:11434
 ENV OLLAMA_API_BASE=http://host.docker.internal:11434
 ENV MODEL=ollama/qwen3.5:9b

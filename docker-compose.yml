@@ -21,10 +21,10 @@ services:
 
   # ── InvoiceIQ API + Frontend ──────────────────────────────────────────────────
   api:
-    image: shahnoor77/invoiceiq:latest
+    image: shahnoor77/invoiceiq:v1
     restart: unless-stopped
     ports:
-      - "80:80"
+      - "85:80"
     env_file: .env
     environment:
       # Override to use internal docker network hostname
