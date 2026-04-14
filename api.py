@@ -328,7 +328,6 @@ def test_email_connection(user: User = Depends(get_current_user), db: Session = 
         raise HTTPException(status_code=404, detail="No email config found")
     try:
         import imaplib
-        # Always test IMAP (incoming) — that's what the scheduler uses
         if cfg.imap_encryption in ("SSL/TLS", "SSL"):
             mail = imaplib.IMAP4_SSL(cfg.imap_host, cfg.imap_port)
         else:
@@ -336,7 +335,6 @@ def test_email_connection(user: User = Depends(get_current_user), db: Session = 
             if cfg.imap_encryption == "STARTTLS":
                 mail.starttls()
         mail.login(cfg.username, cfg.password)
-        # Check the folder exists
         status, _ = mail.select(cfg.folder or "INBOX")
         mail.logout()
         if status == "OK":
@@ -344,6 +342,17 @@ def test_email_connection(user: User = Depends(get_current_user), db: Session = 
         return {"success": False, "message": f"Connected but folder '{cfg.folder}' not found"}
     except Exception as e:
         return {"success": False, "message": str(e)}
+
+
+@router.patch("/settings/email/toggle", tags=["Settings"])
+def toggle_email_config(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """Enable or disable the user's email polling account."""
+    cfg = db.query(EmailConfig).filter(EmailConfig.user_id == user.id).first()
+    if not cfg:
+        raise HTTPException(status_code=404, detail="No email config found")
+    cfg.is_active = not cfg.is_active
+    db.commit()
+    return {"is_active": cfg.is_active, "message": f"Email polling {'enabled' if cfg.is_active else 'disabled'}"}
 
 
 # ── Webhook endpoints ─────────────────────────────────────────────────────────
@@ -549,13 +558,25 @@ def reject_invoice(invoice_id: str, body: ApprovalRequest, user: User = Depends(
     inv = db.query(Invoice).filter(Invoice.id == invoice_id, Invoice.user_id == user.id).first()
     if not inv:
         raise HTTPException(status_code=404, detail="Invoice not found")
-
     inv.approval_status = "REJECTED"
     inv.approved_by = user.name
     inv.approved_at = datetime.utcnow()
     inv.rejected_reason = body.reject_reason or ""
     db.commit()
     return {"status": "rejected"}
+
+
+@router.delete("/invoices/{invoice_id}", tags=["Invoices"])
+def delete_invoice(invoice_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """Permanently delete an invoice and its line items."""
+    inv = db.query(Invoice).filter(Invoice.id == invoice_id, Invoice.user_id == user.id).first()
+    if not inv:
+        raise HTTPException(status_code=404, detail="Invoice not found")
+    # Null out the FK reference in processing_jobs before deleting
+    db.query(ProcessingJob).filter(ProcessingJob.invoice_id == invoice_id).update({"invoice_id": None})
+    db.delete(inv)
+    db.commit()
+    return {"message": "Invoice deleted"}
 
 
 # ── Manual invoice upload ─────────────────────────────────────────────────────

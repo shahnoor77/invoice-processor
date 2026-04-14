@@ -3,9 +3,9 @@ import { motion } from 'framer-motion';
 import { useForm } from 'react-hook-form';
 import { z } from 'zod';
 import { zodResolver } from '@hookform/resolvers/zod';
-import { Info, Loader2, CheckCircle, XCircle, Edit2, Mail, RefreshCw } from 'lucide-react';
+import { Info, Loader2, CheckCircle, XCircle, Edit2, Mail, RefreshCw, ToggleLeft, ToggleRight } from 'lucide-react';
 import { toast } from 'sonner';
-import { apiGetEmailConfig, apiSaveEmailConfig, apiTestEmailConnection } from '@/lib/api';
+import { apiGetEmailConfig, apiSaveEmailConfig, apiTestEmailConnection, apiToggleEmailConfig } from '@/lib/api';
 
 const schema = z.object({
   display_name: z.string().min(1, 'Required'),
@@ -38,6 +38,7 @@ export function EmailServerForm({ onNext }: Props) {
   const [testMessage, setTestMessage] = useState('');
   const [savedConfig, setSavedConfig] = useState<any>(null);
   const [editing, setEditing] = useState(false);
+  const [toggling, setToggling] = useState(false);
 
   const { register, handleSubmit, setValue, watch, formState: { errors, isValid } } = useForm<FormData>({
     resolver: zodResolver(schema),
@@ -105,7 +106,15 @@ export function EmailServerForm({ onNext }: Props) {
     setPolling(false);
   };
 
-  const onSubmit = async (data: FormData) => {
+  const handleToggle = async () => {
+    setToggling(true);
+    try {
+      const res = await apiToggleEmailConfig();
+      setSavedConfig((c: any) => ({ ...c, is_active: res.is_active }));
+      toast.success(res.message);
+    } catch (e: any) { toast.error(e.message); }
+    setToggling(false);
+  };  const onSubmit = async (data: FormData) => {
     setSaving(true);
     try {
       const result: any = await apiSaveEmailConfig({ email: data.email, password: data.password, display_name: data.display_name, folder: data.folder, poll_interval_minutes: data.poll_interval_minutes, mark_as_read: data.mark_as_read });
@@ -122,6 +131,7 @@ export function EmailServerForm({ onNext }: Props) {
 
   // Saved config card
   if (savedConfig?.email && !editing) {
+    const isActive = savedConfig.is_active !== false;
     return (
       <div>
         <div className="mb-6 flex items-start justify-between">
@@ -130,7 +140,7 @@ export function EmailServerForm({ onNext }: Props) {
             <p className="text-muted-foreground text-sm mt-1">Your email source is configured and polling automatically.</p>
           </div>
           <div className="flex gap-2">
-            <button onClick={handlePollNow} disabled={polling}
+            <button onClick={handlePollNow} disabled={polling || !isActive}
               className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-border text-sm font-medium text-foreground hover:bg-muted transition-all disabled:opacity-50">
               {polling ? <Loader2 size={13} className="animate-spin" /> : <RefreshCw size={13} />} Poll Now
             </button>
@@ -141,9 +151,16 @@ export function EmailServerForm({ onNext }: Props) {
           </div>
         </div>
 
-        <div className="border border-success/30 bg-success/5 rounded-xl p-5">
-          <div className="flex items-center gap-2 text-success text-sm font-semibold mb-4">
-            <CheckCircle size={16} /> Email source configured
+        <div className={`border rounded-xl p-5 ${isActive ? 'border-success/30 bg-success/5' : 'border-border bg-surface-2'}`}>
+          <div className="flex items-center justify-between mb-4">
+            <div className={`flex items-center gap-2 text-sm font-semibold ${isActive ? 'text-success' : 'text-muted-foreground'}`}>
+              <CheckCircle size={16} /> {isActive ? 'Active — polling emails' : 'Disabled — polling paused'}
+            </div>
+            <button onClick={handleToggle} disabled={toggling}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-xs font-medium transition-all disabled:opacity-50 ${isActive ? 'border-destructive/30 text-destructive hover:bg-destructive/10' : 'border-success/30 text-success hover:bg-success/10'}`}>
+              {toggling ? <Loader2 size={12} className="animate-spin" /> : isActive ? <ToggleRight size={14} /> : <ToggleLeft size={14} />}
+              {isActive ? 'Disable' : 'Enable'}
+            </button>
           </div>
           <div className="flex items-center gap-3">
             <div className="w-10 h-10 rounded-full bg-primary/10 flex items-center justify-center">

@@ -1,9 +1,10 @@
 import { useState, useMemo, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Search, Download, Eye, ChevronLeft, ChevronRight, RefreshCw } from 'lucide-react';
+import { Search, Eye, ChevronLeft, ChevronRight, RefreshCw, Trash2 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
-import { apiGetInvoices, RealInvoice } from '@/lib/api';
+import { apiGetInvoices, apiDeleteInvoice, RealInvoice } from '@/lib/api';
 import { StatusBadge } from '@/components/invoice/StatusBadge';
+import { toast } from 'sonner';
 
 const statusFilters = ['All', 'PENDING', 'APPROVED', 'REJECTED'] as const;
 const ROWS_PER_PAGE = 8;
@@ -23,6 +24,21 @@ export default function InvoicesPage() {
   const [sortField, setSortField] = useState<string>('');
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('asc');
   const [currentPage, setCurrentPage] = useState(1);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+
+  const handleDelete = async (id: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!confirm('Delete this invoice? This cannot be undone.')) return;
+    setDeletingId(id);
+    try {
+      await apiDeleteInvoice(id);
+      setInvoices(prev => prev.filter(inv => inv.id !== id));
+      toast.success('Invoice deleted');
+    } catch (err: any) {
+      toast.error(err.message);
+    }
+    setDeletingId(null);
+  };
 
   const load = async () => {
     setLoading(true);
@@ -184,10 +200,16 @@ export default function InvoicesPage() {
                   </td>
                   <td className="px-3 py-2.5"><StatusBadge status={mapStatus(inv.approval_status)} /></td>
                   <td className="px-3 py-2.5">
-                    <button onClick={() => navigate(`/invoices/${inv.id}`)}
-                      className="flex items-center gap-1 px-2 py-1 rounded-md border border-border text-[11px] font-medium text-foreground hover:bg-muted hover:scale-105 transition-all">
-                      <Eye size={11} /> View
-                    </button>
+                    <div className="flex items-center gap-1">
+                      <button onClick={() => navigate(`/invoices/${inv.id}`)}
+                        className="flex items-center gap-1 px-2 py-1 rounded-md border border-border text-[11px] font-medium text-foreground hover:bg-muted hover:scale-105 transition-all">
+                        <Eye size={11} /> View
+                      </button>
+                      <button onClick={(e) => handleDelete(inv.id, e)} disabled={deletingId === inv.id}
+                        className="flex items-center gap-1 px-2 py-1 rounded-md border border-destructive/30 text-[11px] font-medium text-destructive hover:bg-destructive/10 transition-all disabled:opacity-50">
+                        <Trash2 size={11} />
+                      </button>
+                    </div>
                   </td>
                 </motion.tr>
               ))}
