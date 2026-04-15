@@ -574,6 +574,136 @@ class ApprovalRequest(BaseModel):
     reject_reason: Optional[str] = None
 
 
+class InvoiceLineItemPatch(BaseModel):
+    description: Optional[str] = None
+    quantity: Optional[float] = None
+    unit: Optional[str] = None
+    unit_price: Optional[float] = None
+    discount: Optional[float] = None
+    total: Optional[float] = None
+
+
+class InvoicePatchRequest(BaseModel):
+    invoice_number: Optional[str] = None
+    invoice_date: Optional[str] = None
+    due_date: Optional[str] = None
+    delivery_date: Optional[str] = None
+    payment_terms: Optional[str] = None
+    payment_method: Optional[str] = None
+    purchase_order: Optional[str] = None
+    reference: Optional[str] = None
+
+    sender_name: Optional[str] = None
+    sender_address: Optional[str] = None
+    sender_city: Optional[str] = None
+    sender_state: Optional[str] = None
+    sender_zip: Optional[str] = None
+    sender_country: Optional[str] = None
+    sender_email: Optional[str] = None
+    sender_phone: Optional[str] = None
+    sender_website: Optional[str] = None
+    sender_tax_id: Optional[str] = None
+    sender_vat_number: Optional[str] = None
+    sender_registration: Optional[str] = None
+
+    sender_bank_name: Optional[str] = None
+    sender_bank_account_holder: Optional[str] = None
+    sender_bank_account_number: Optional[str] = None
+    sender_bank_iban: Optional[str] = None
+    sender_bank_swift: Optional[str] = None
+    sender_bank_routing: Optional[str] = None
+    sender_bank_sort_code: Optional[str] = None
+    sender_bank_branch: Optional[str] = None
+    sender_bank_address: Optional[str] = None
+
+    receiver_name: Optional[str] = None
+    receiver_address: Optional[str] = None
+    receiver_city: Optional[str] = None
+    receiver_state: Optional[str] = None
+    receiver_zip: Optional[str] = None
+    receiver_country: Optional[str] = None
+    receiver_email: Optional[str] = None
+    receiver_phone: Optional[str] = None
+    receiver_tax_id: Optional[str] = None
+    receiver_vat_number: Optional[str] = None
+
+    receiver_bank_name: Optional[str] = None
+    receiver_bank_account_holder: Optional[str] = None
+    receiver_bank_account_number: Optional[str] = None
+    receiver_bank_iban: Optional[str] = None
+    receiver_bank_swift: Optional[str] = None
+    receiver_bank_routing: Optional[str] = None
+    receiver_bank_sort_code: Optional[str] = None
+    receiver_bank_branch: Optional[str] = None
+
+    currency: Optional[str] = None
+    exchange_rate: Optional[float] = None
+    subtotal: Optional[float] = None
+    discount_total: Optional[float] = None
+    discount_percent: Optional[float] = None
+    tax_rate: Optional[float] = None
+    tax_amount: Optional[float] = None
+    tax_type: Optional[str] = None
+    shipping: Optional[float] = None
+    handling: Optional[float] = None
+    other_charges: Optional[float] = None
+    total_amount: Optional[float] = None
+    amount_paid: Optional[float] = None
+    amount_due: Optional[float] = None
+    deposit: Optional[float] = None
+
+    notes: Optional[str] = None
+    terms_and_conditions: Optional[str] = None
+
+    line_items: Optional[list[InvoiceLineItemPatch]] = None
+
+
+_EDITABLE_INVOICE_FIELDS = {
+    "invoice_number", "invoice_date", "due_date", "delivery_date", "payment_terms", "payment_method", "purchase_order", "reference",
+    "sender_name", "sender_address", "sender_city", "sender_state", "sender_zip", "sender_country", "sender_email", "sender_phone",
+    "sender_website", "sender_tax_id", "sender_vat_number", "sender_registration",
+    "sender_bank_name", "sender_bank_account_holder", "sender_bank_account_number", "sender_bank_iban", "sender_bank_swift",
+    "sender_bank_routing", "sender_bank_sort_code", "sender_bank_branch", "sender_bank_address",
+    "receiver_name", "receiver_address", "receiver_city", "receiver_state", "receiver_zip", "receiver_country", "receiver_email",
+    "receiver_phone", "receiver_tax_id", "receiver_vat_number",
+    "receiver_bank_name", "receiver_bank_account_holder", "receiver_bank_account_number", "receiver_bank_iban", "receiver_bank_swift",
+    "receiver_bank_routing", "receiver_bank_sort_code", "receiver_bank_branch",
+    "currency", "exchange_rate", "subtotal", "discount_total", "discount_percent", "tax_rate", "tax_amount", "tax_type",
+    "shipping", "handling", "other_charges", "total_amount", "amount_paid", "amount_due", "deposit", "notes", "terms_and_conditions",
+}
+
+
+@router.patch("/invoices/{invoice_id}", tags=["Invoices"])
+def update_invoice(invoice_id: str, body: InvoicePatchRequest, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    inv = db.query(Invoice).filter(Invoice.id == invoice_id, Invoice.user_id == user.id).first()
+    if not inv:
+        raise HTTPException(status_code=404, detail="Invoice not found")
+
+    payload = body.model_dump(exclude_unset=True)
+    line_items_payload = payload.pop("line_items", None)
+
+    for field, value in payload.items():
+        if field in _EDITABLE_INVOICE_FIELDS:
+            setattr(inv, field, value)
+
+    if line_items_payload is not None:
+        inv.line_items.clear()
+        for line in line_items_payload:
+            item_data = {
+                "description": line.get("description"),
+                "quantity": line.get("quantity"),
+                "unit": line.get("unit"),
+                "unit_price": line.get("unit_price"),
+                "discount": line.get("discount"),
+                "total": line.get("total"),
+            }
+            inv.line_items.append(InvoiceLineItem(**item_data))
+
+    db.commit()
+    db.refresh(inv)
+    return _invoice_to_dict(inv)
+
+
 @router.patch("/invoices/{invoice_id}/approve", tags=["Invoices"])
 def approve_invoice(invoice_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     inv = db.query(Invoice).filter(Invoice.id == invoice_id, Invoice.user_id == user.id).first()

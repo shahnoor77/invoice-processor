@@ -39,6 +39,8 @@ export const apiRegister = (email: string, password: string, name: string) =>
 // Invoices
 export const apiGetInvoices = () => req<RealInvoice[]>('GET', '/invoices')
 export const apiGetInvoice = (id: string) => req<RealInvoice>('GET', `/invoices/${id}`)
+export const apiPatchInvoice = (id: string, data: Record<string, unknown>) =>
+  req<RealInvoice>('PATCH', `/invoices/${id}`, data)
 export const apiApproveInvoice = (id: string) => req('PATCH', `/invoices/${id}/approve`)
 export const apiRejectInvoice = (id: string, reason?: string) =>
   req('PATCH', `/invoices/${id}/reject`, { reject_reason: reason })

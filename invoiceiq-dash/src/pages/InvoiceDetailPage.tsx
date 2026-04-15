@@ -1,8 +1,8 @@
 import { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
-import { ArrowLeft, CheckCircle, XCircle, Loader2, MapPin, Phone, Hash, Clock, Receipt, Calendar, CreditCard, Mail } from 'lucide-react';
-import { apiGetInvoice, apiApproveInvoice, apiRejectInvoice, RealInvoice } from '@/lib/api';
+import { ArrowLeft, CheckCircle, XCircle, Loader2, MapPin, Phone, Hash, Clock, Receipt, Calendar, CreditCard, Mail, Pencil, Save, Plus, Trash2 } from 'lucide-react';
+import { apiGetInvoice, apiApproveInvoice, apiRejectInvoice, apiPatchInvoice, RealInvoice } from '@/lib/api';
 import { StatusBadge } from '@/components/invoice/StatusBadge';
 import { toast } from 'sonner';
 
@@ -13,6 +13,138 @@ function mapStatus(s: string): 'Pending' | 'Approved' | 'Rejected' {
 }
 
 type ValidationIssue = { field: string; original: number; corrected: number; note: string };
+
+type EditableLineItem = {
+  description: string;
+  quantity: string;
+  unit_price: string;
+  total: string;
+};
+
+type EditableInvoice = {
+  invoice_number: string;
+  invoice_date: string;
+  due_date: string;
+  payment_terms: string;
+  purchase_order: string;
+  currency: string;
+  sender_name: string;
+  sender_email: string;
+  sender_phone: string;
+  sender_tax_id: string;
+  sender_address: string;
+  sender_city: string;
+  sender_country: string;
+  sender_bank_name: string;
+  sender_bank_account_number: string;
+  sender_bank_iban: string;
+  sender_bank_swift: string;
+  receiver_bank_name: string;
+  receiver_bank_account_number: string;
+  receiver_bank_iban: string;
+  receiver_bank_swift: string;
+  subtotal: string;
+  tax_rate: string;
+  tax_amount: string;
+  total_amount: string;
+  amount_paid: string;
+  amount_due: string;
+  notes: string;
+  line_items: EditableLineItem[];
+};
+
+const asInput = (v: string | number | null | undefined) => (v == null ? '' : String(v));
+const asNullableString = (v: string) => {
+  const t = v.trim();
+  return t ? t : null;
+};
+const asNullableNumber = (v: string) => {
+  const t = v.trim();
+  if (!t) return null;
+  const n = Number(t);
+  return Number.isFinite(n) ? n : null;
+};
+const getErrorMessage = (e: unknown) => (e instanceof Error ? e.message : 'Request failed');
+
+function toEditableInvoice(inv: RealInvoice): EditableInvoice {
+  return {
+    invoice_number: asInput(inv.invoice_number),
+    invoice_date: asInput(inv.invoice_date),
+    due_date: asInput(inv.due_date),
+    payment_terms: asInput(inv.payment_terms),
+    purchase_order: asInput(inv.purchase_order),
+    currency: asInput(inv.currency),
+    sender_name: asInput(inv.sender_name),
+    sender_email: asInput(inv.sender_email),
+    sender_phone: asInput(inv.sender_phone),
+    sender_tax_id: asInput(inv.sender_tax_id),
+    sender_address: asInput(inv.sender_address),
+    sender_city: asInput(inv.sender_city),
+    sender_country: asInput(inv.sender_country),
+    sender_bank_name: asInput(inv.sender_bank_name),
+    sender_bank_account_number: asInput(inv.sender_bank_account_number),
+    sender_bank_iban: asInput(inv.sender_bank_iban),
+    sender_bank_swift: asInput(inv.sender_bank_swift),
+    receiver_bank_name: asInput(inv.receiver_bank_name),
+    receiver_bank_account_number: asInput(inv.receiver_bank_account_number),
+    receiver_bank_iban: asInput(inv.receiver_bank_iban),
+    receiver_bank_swift: asInput(inv.receiver_bank_swift),
+    subtotal: asInput(inv.subtotal),
+    tax_rate: asInput(inv.tax_rate),
+    tax_amount: asInput(inv.tax_amount),
+    total_amount: asInput(inv.total_amount),
+    amount_paid: asInput(inv.amount_paid),
+    amount_due: asInput(inv.amount_due),
+    notes: asInput(inv.notes),
+    line_items: (inv.line_items || []).map((li) => ({
+      description: asInput(li.description),
+      quantity: asInput(li.quantity),
+      unit_price: asInput(li.unit_price),
+      total: asInput(li.total),
+    })),
+  };
+}
+
+function toPatchPayload(draft: EditableInvoice): Record<string, unknown> {
+  return {
+    invoice_number: asNullableString(draft.invoice_number),
+    invoice_date: asNullableString(draft.invoice_date),
+    due_date: asNullableString(draft.due_date),
+    payment_terms: asNullableString(draft.payment_terms),
+    purchase_order: asNullableString(draft.purchase_order),
+    currency: asNullableString(draft.currency),
+    sender_name: asNullableString(draft.sender_name),
+    sender_email: asNullableString(draft.sender_email),
+    sender_phone: asNullableString(draft.sender_phone),
+    sender_tax_id: asNullableString(draft.sender_tax_id),
+    sender_address: asNullableString(draft.sender_address),
+    sender_city: asNullableString(draft.sender_city),
+    sender_country: asNullableString(draft.sender_country),
+    sender_bank_name: asNullableString(draft.sender_bank_name),
+    sender_bank_account_number: asNullableString(draft.sender_bank_account_number),
+    sender_bank_iban: asNullableString(draft.sender_bank_iban),
+    sender_bank_swift: asNullableString(draft.sender_bank_swift),
+    receiver_bank_name: asNullableString(draft.receiver_bank_name),
+    receiver_bank_account_number: asNullableString(draft.receiver_bank_account_number),
+    receiver_bank_iban: asNullableString(draft.receiver_bank_iban),
+    receiver_bank_swift: asNullableString(draft.receiver_bank_swift),
+    subtotal: asNullableNumber(draft.subtotal),
+    tax_rate: asNullableNumber(draft.tax_rate),
+    tax_amount: asNullableNumber(draft.tax_amount),
+    total_amount: asNullableNumber(draft.total_amount),
+    amount_paid: asNullableNumber(draft.amount_paid),
+    amount_due: asNullableNumber(draft.amount_due),
+    notes: asNullableString(draft.notes),
+    line_items: draft.line_items
+      .filter((li) => li.description.trim() || li.quantity.trim() || li.unit_price.trim() || li.total.trim())
+      .map((li) => ({
+        description: asNullableString(li.description),
+        quantity: asNullableNumber(li.quantity),
+        unit_price: asNullableNumber(li.unit_price),
+        total: asNullableNumber(li.total),
+      })),
+  };
+}
 
 /** Renders a value cell. If the field was auto-corrected, shows the wrong value struck-through in amber, then the correct value. */
 function ValCell({ field, value, currency = '', issueMap }: {
@@ -43,6 +175,9 @@ export default function InvoiceDetailPage() {
   const [action, setAction] = useState<'approve' | 'reject' | null>(null);
   const [actionLoading, setActionLoading] = useState(false);
   const [rejectionReason, setRejectionReason] = useState('');
+  const [isEditing, setIsEditing] = useState(false);
+  const [savingEdits, setSavingEdits] = useState(false);
+  const [draft, setDraft] = useState<EditableInvoice | null>(null);
 
   useEffect(() => {
     if (!id) return;
@@ -56,8 +191,8 @@ export default function InvoiceDetailPage() {
       await apiApproveInvoice(invoice.id);
       setInvoice({ ...invoice, approval_status: 'APPROVED' });
       toast.success(`Invoice ${invoice.invoice_number || invoice.id} approved`);
-    } catch (e: any) {
-      toast.error(e.message);
+    } catch (e: unknown) {
+      toast.error(getErrorMessage(e));
     } finally {
       setActionLoading(false);
       setAction(null);
@@ -71,11 +206,68 @@ export default function InvoiceDetailPage() {
       await apiRejectInvoice(invoice.id, rejectionReason);
       setInvoice({ ...invoice, approval_status: 'REJECTED', rejected_reason: rejectionReason });
       toast.success(`Invoice ${invoice.invoice_number || invoice.id} rejected`);
-    } catch (e: any) {
-      toast.error(e.message);
+    } catch (e: unknown) {
+      toast.error(getErrorMessage(e));
     } finally {
       setActionLoading(false);
       setAction(null);
+    }
+  };
+
+  const startEditing = () => {
+    if (!invoice) return;
+    setDraft(toEditableInvoice(invoice));
+    setIsEditing(true);
+  };
+
+  const cancelEditing = () => {
+    setIsEditing(false);
+    setDraft(null);
+  };
+
+  const setDraftField = (field: Exclude<keyof EditableInvoice, 'line_items'>, value: string) => {
+    setDraft((prev) => (prev ? { ...prev, [field]: value } : prev));
+  };
+
+  const setDraftLineItem = (index: number, field: keyof EditableLineItem, value: string) => {
+    setDraft((prev) => {
+      if (!prev) return prev;
+      const line_items = [...prev.line_items];
+      line_items[index] = { ...line_items[index], [field]: value };
+      return { ...prev, line_items };
+    });
+  };
+
+  const addDraftLineItem = () => {
+    setDraft((prev) => {
+      if (!prev) return prev;
+      return {
+        ...prev,
+        line_items: [...prev.line_items, { description: '', quantity: '', unit_price: '', total: '' }],
+      };
+    });
+  };
+
+  const removeDraftLineItem = (index: number) => {
+    setDraft((prev) => {
+      if (!prev) return prev;
+      return { ...prev, line_items: prev.line_items.filter((_, i) => i !== index) };
+    });
+  };
+
+  const handleSaveEdits = async () => {
+    if (!invoice || !draft) return;
+    setSavingEdits(true);
+    try {
+      const updated = await apiPatchInvoice(invoice.id, toPatchPayload(draft));
+      setInvoice(updated);
+      setIsEditing(false);
+      setDraft(null);
+      toast.success(`Invoice ${updated.invoice_number || updated.id} updated`);
+    } catch (e: unknown) {
+      toast.error(getErrorMessage(e));
+    } finally {
+      setSavingEdits(false);
     }
   };
 
@@ -102,7 +294,7 @@ export default function InvoiceDetailPage() {
   const cur = invoice.currency || '';
 
   // Validation issues map: field → issue
-  const validationIssues: ValidationIssue[] = (invoice.full_json as any)?.validation_issues ?? [];
+  const validationIssues: ValidationIssue[] = ((invoice.full_json || {}) as { validation_issues?: ValidationIssue[] }).validation_issues ?? [];
   const issueMap: Record<string, ValidationIssue> = Object.fromEntries(validationIssues.map(i => [i.field, i]));
   const hasIssues = validationIssues.length > 0;
 
@@ -133,11 +325,185 @@ export default function InvoiceDetailPage() {
           </div>
           <p className="text-xs text-muted-foreground mt-0.5">From {invoice.sender_name || invoice.file_name || '—'}</p>
         </div>
+        <div className="flex items-center gap-2">
+          {isEditing ? (
+            <>
+              <button
+                onClick={cancelEditing}
+                disabled={savingEdits}
+                className="h-8 px-3 rounded-lg border border-border text-xs font-medium text-foreground hover:bg-muted transition-all disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleSaveEdits}
+                disabled={savingEdits}
+                className="h-8 px-3 rounded-lg bg-primary text-primary-foreground text-xs font-medium hover:bg-primary/90 transition-all inline-flex items-center gap-1.5 disabled:opacity-50"
+              >
+                {savingEdits ? <Loader2 size={12} className="animate-spin" /> : <Save size={12} />} Save Changes
+              </button>
+            </>
+          ) : (
+            <button
+              onClick={startEditing}
+              className="h-8 px-3 rounded-lg border border-border text-xs font-medium text-foreground hover:bg-muted transition-all inline-flex items-center gap-1.5"
+            >
+              <Pencil size={12} /> Edit Invoice
+            </button>
+          )}
+        </div>
       </div>
 
       <div className={`h-1 ${statusColors[status]} rounded-full mb-5`} />
 
       <motion.div variants={container} initial="hidden" animate="show" className="space-y-5">
+        {isEditing && draft && (
+          <motion.div variants={item} className="border border-border rounded-xl overflow-hidden bg-background">
+            <div className="px-4 py-3 border-b border-border">
+              <h3 className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider">Edit Invoice</h3>
+            </div>
+            <div className="p-4 space-y-5">
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+                <EditField label="Invoice #" value={draft.invoice_number} onChange={(v) => setDraftField('invoice_number', v)} />
+                <EditField label="Issue Date" type="date" value={draft.invoice_date} onChange={(v) => setDraftField('invoice_date', v)} />
+                <EditField label="Due Date" type="date" value={draft.due_date} onChange={(v) => setDraftField('due_date', v)} />
+                <EditField label="Payment Terms" value={draft.payment_terms} onChange={(v) => setDraftField('payment_terms', v)} />
+                <EditField label="PO Number" value={draft.purchase_order} onChange={(v) => setDraftField('purchase_order', v)} />
+                <EditField label="Currency" value={draft.currency} onChange={(v) => setDraftField('currency', v)} />
+              </div>
+
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                <div className="space-y-3">
+                  <h4 className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider">Supplier</h4>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                    <EditField label="Name" value={draft.sender_name} onChange={(v) => setDraftField('sender_name', v)} />
+                    <EditField label="Email" type="email" value={draft.sender_email} onChange={(v) => setDraftField('sender_email', v)} />
+                    <EditField label="Phone" value={draft.sender_phone} onChange={(v) => setDraftField('sender_phone', v)} />
+                    <EditField label="Tax ID" value={draft.sender_tax_id} onChange={(v) => setDraftField('sender_tax_id', v)} />
+                    <EditField label="City" value={draft.sender_city} onChange={(v) => setDraftField('sender_city', v)} />
+                    <EditField label="Country" value={draft.sender_country} onChange={(v) => setDraftField('sender_country', v)} />
+                  </div>
+                  <EditTextArea label="Address" value={draft.sender_address} onChange={(v) => setDraftField('sender_address', v)} rows={2} />
+                </div>
+
+                <div className="space-y-3">
+                  <h4 className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider">Financials</h4>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                    <EditField label="Subtotal" type="number" value={draft.subtotal} onChange={(v) => setDraftField('subtotal', v)} />
+                    <EditField label="Tax Rate (%)" type="number" value={draft.tax_rate} onChange={(v) => setDraftField('tax_rate', v)} />
+                    <EditField label="Tax Amount" type="number" value={draft.tax_amount} onChange={(v) => setDraftField('tax_amount', v)} />
+                    <EditField label="Total" type="number" value={draft.total_amount} onChange={(v) => setDraftField('total_amount', v)} />
+                    <EditField label="Amount Paid" type="number" value={draft.amount_paid} onChange={(v) => setDraftField('amount_paid', v)} />
+                    <EditField label="Amount Due" type="number" value={draft.amount_due} onChange={(v) => setDraftField('amount_due', v)} />
+                  </div>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                <div className="space-y-3">
+                  <h4 className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider">Sender Bank</h4>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                    <EditField label="Bank" value={draft.sender_bank_name} onChange={(v) => setDraftField('sender_bank_name', v)} />
+                    <EditField label="Account No." value={draft.sender_bank_account_number} onChange={(v) => setDraftField('sender_bank_account_number', v)} />
+                    <EditField label="IBAN" value={draft.sender_bank_iban} onChange={(v) => setDraftField('sender_bank_iban', v)} />
+                    <EditField label="SWIFT / BIC" value={draft.sender_bank_swift} onChange={(v) => setDraftField('sender_bank_swift', v)} />
+                  </div>
+                </div>
+                <div className="space-y-3">
+                  <h4 className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider">Receiver Bank</h4>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                    <EditField label="Bank" value={draft.receiver_bank_name} onChange={(v) => setDraftField('receiver_bank_name', v)} />
+                    <EditField label="Account No." value={draft.receiver_bank_account_number} onChange={(v) => setDraftField('receiver_bank_account_number', v)} />
+                    <EditField label="IBAN" value={draft.receiver_bank_iban} onChange={(v) => setDraftField('receiver_bank_iban', v)} />
+                    <EditField label="SWIFT / BIC" value={draft.receiver_bank_swift} onChange={(v) => setDraftField('receiver_bank_swift', v)} />
+                  </div>
+                </div>
+              </div>
+
+              <div className="space-y-3">
+                <div className="flex items-center justify-between">
+                  <h4 className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider">Line Items</h4>
+                  <button
+                    onClick={addDraftLineItem}
+                    className="h-7 px-2.5 rounded-lg border border-border text-xs font-medium text-foreground hover:bg-muted transition-all inline-flex items-center gap-1"
+                  >
+                    <Plus size={12} /> Add Line
+                  </button>
+                </div>
+                <div className="overflow-x-auto border border-border rounded-lg">
+                  <table className="w-full text-xs">
+                    <thead>
+                      <tr className="bg-surface-2 text-muted-foreground">
+                        <th className="px-3 py-2 text-left font-medium">Description</th>
+                        <th className="px-3 py-2 text-right font-medium w-28">Qty</th>
+                        <th className="px-3 py-2 text-right font-medium w-32">Unit Price</th>
+                        <th className="px-3 py-2 text-right font-medium w-32">Total</th>
+                        <th className="px-3 py-2 text-center font-medium w-16">-</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {draft.line_items.length === 0 && (
+                        <tr>
+                          <td colSpan={5} className="px-3 py-3 text-center text-muted-foreground">No line items</td>
+                        </tr>
+                      )}
+                      {draft.line_items.map((li, i) => (
+                        <tr key={`${i}-${li.description}`} className="border-t border-border">
+                          <td className="px-3 py-2">
+                            <input
+                              value={li.description}
+                              onChange={(e) => setDraftLineItem(i, 'description', e.target.value)}
+                              className="h-8 w-full rounded-md border border-border bg-background px-2 text-xs text-foreground focus:outline-none focus:ring-2 focus:ring-primary/30"
+                              placeholder="Description"
+                            />
+                          </td>
+                          <td className="px-3 py-2">
+                            <input
+                              type="number"
+                              value={li.quantity}
+                              onChange={(e) => setDraftLineItem(i, 'quantity', e.target.value)}
+                              className="h-8 w-full rounded-md border border-border bg-background px-2 text-xs text-foreground text-right focus:outline-none focus:ring-2 focus:ring-primary/30"
+                              placeholder="0"
+                            />
+                          </td>
+                          <td className="px-3 py-2">
+                            <input
+                              type="number"
+                              value={li.unit_price}
+                              onChange={(e) => setDraftLineItem(i, 'unit_price', e.target.value)}
+                              className="h-8 w-full rounded-md border border-border bg-background px-2 text-xs text-foreground text-right focus:outline-none focus:ring-2 focus:ring-primary/30"
+                              placeholder="0.00"
+                            />
+                          </td>
+                          <td className="px-3 py-2">
+                            <input
+                              type="number"
+                              value={li.total}
+                              onChange={(e) => setDraftLineItem(i, 'total', e.target.value)}
+                              className="h-8 w-full rounded-md border border-border bg-background px-2 text-xs text-foreground text-right focus:outline-none focus:ring-2 focus:ring-primary/30"
+                              placeholder="0.00"
+                            />
+                          </td>
+                          <td className="px-3 py-2 text-center">
+                            <button
+                              onClick={() => removeDraftLineItem(i)}
+                              className="h-7 w-7 rounded-md border border-border text-muted-foreground hover:text-destructive hover:border-destructive/30 hover:bg-destructive/5 inline-flex items-center justify-center transition-all"
+                            >
+                              <Trash2 size={12} />
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              <EditTextArea label="Notes" value={draft.notes} onChange={(v) => setDraftField('notes', v)} rows={3} />
+            </div>
+          </motion.div>
+        )}
+
         {/* Supplier + Invoice Details */}
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
           <motion.div variants={item} className="border border-border rounded-xl p-4 bg-background">
@@ -380,6 +746,44 @@ export default function InvoiceDetailPage() {
         )}
       </motion.div>
     </motion.div>
+  );
+}
+
+function EditField({ label, value, onChange, type = 'text' }: {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+  type?: string;
+}) {
+  return (
+    <label className="space-y-1 block">
+      <span className="text-[11px] text-muted-foreground">{label}</span>
+      <input
+        type={type}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        className="h-8 w-full rounded-lg border border-border bg-surface-2 px-2.5 text-xs text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/30"
+      />
+    </label>
+  );
+}
+
+function EditTextArea({ label, value, onChange, rows = 2 }: {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+  rows?: number;
+}) {
+  return (
+    <label className="space-y-1 block">
+      <span className="text-[11px] text-muted-foreground">{label}</span>
+      <textarea
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        rows={rows}
+        className="w-full rounded-lg border border-border bg-surface-2 px-2.5 py-2 text-xs text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/30"
+      />
+    </label>
   );
 }
 
