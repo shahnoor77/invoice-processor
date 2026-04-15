@@ -110,6 +110,15 @@ export default function InvoicesPage() {
     return pages;
   };
 
+  const formatProcessedDate = (createdAt?: string | null) => {
+    if (!createdAt) return '—';
+
+    const d = new Date(createdAt);
+    if (Number.isNaN(d.getTime())) return '—';
+
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}:${String(d.getSeconds()).padStart(2, '0')}`;
+  };
+
   if (loading) {
     return (
       <div className="flex items-center justify-center min-h-[60vh]">
@@ -171,6 +180,7 @@ export default function InvoicesPage() {
               <tr className="bg-surface-2 text-muted-foreground">
                 {[
                   { key: 'invoice_number', label: 'Invoice #' },
+                  { key: 'created_at', label: 'Processed Date' },
                   { key: 'sender_name', label: 'Vendor' },
                   { key: 'receiver_name', label: 'Bill To' },
                   { key: 'invoice_date', label: 'Issue Date' },
@@ -191,6 +201,7 @@ export default function InvoicesPage() {
                 <motion.tr key={inv.id} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: i * 0.03 }}
                   className="border-t border-border hover:bg-surface-2 transition-colors">
                   <td className="px-3 py-2.5 font-medium text-foreground">{inv.invoice_number || '—'}</td>
+                  <td className="px-3 py-2.5 font-medium text-foreground">{formatProcessedDate(inv.created_at)}</td>
                   <td className="px-3 py-2.5 text-foreground">{inv.sender_name || '—'}</td>
                   <td className="px-3 py-2.5 text-muted-foreground">{inv.receiver_name || '—'}</td>
                   <td className="px-3 py-2.5 text-muted-foreground">{inv.invoice_date || '—'}</td>
