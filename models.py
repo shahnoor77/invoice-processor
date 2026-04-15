@@ -259,12 +259,12 @@ class UserModelConfig(Base):
     __tablename__ = "user_model_configs"
 
     id: Mapped[str] = mapped_column(String, primary_key=True, default=new_uuid)
-    user_id: Mapped[str] = mapped_column(String, ForeignKey("users.id"), nullable=False, unique=True)
+    user_id: Mapped[str] = mapped_column(String, ForeignKey("users.id"), nullable=False)  # no unique — multiple per user
 
-    # LLM settings — if null, system defaults from .env are used
-    model_name: Mapped[Optional[str]] = mapped_column(String, nullable=True)   # e.g. "ollama/qwen3.5:9b"
-    api_key: Mapped[Optional[str]] = mapped_column(String, nullable=True)       # encrypted in prod
-    base_url: Mapped[Optional[str]] = mapped_column(String, nullable=True)      # for custom Ollama endpoints
+    model_name: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    api_key: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    base_url: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    status: Mapped[str] = mapped_column(String, default="inactive")  # "active" | "inactive"
 
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

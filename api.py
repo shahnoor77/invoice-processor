@@ -226,54 +226,58 @@ def _discover_email_settings(domain: str) -> dict:
     """
     Discover IMAP/SMTP settings for a custom domain.
     Tries MX record lookup then common hostname patterns.
+    Has a short timeout to avoid hanging on unresponsive DNS.
     """
     import socket
 
-    # Common hostname patterns to try
-    imap_candidates = [
-        f"mail.{domain}",
-        f"imap.{domain}",
-        f"imap4.{domain}",
-        domain,
-        f"webmail.{domain}",
-    ]
-    smtp_candidates = [
-        f"mail.{domain}",
-        f"smtp.{domain}",
-        domain,
-        f"webmail.{domain}",
-    ]
+    default = {
+        "imap_host": f"mail.{domain}",
+        "imap_port": 993,
+        "imap_encryption": "SSL/TLS",
+        "smtp_host": f"mail.{domain}",
+        "smtp_port": 587,
+        "smtp_encryption": "STARTTLS",
+    }
 
-    # Try MX record to get the mail server
+    imap_candidates = [f"mail.{domain}", f"imap.{domain}", domain]
+    smtp_candidates = [f"mail.{domain}", f"smtp.{domain}", domain]
+
+    # Try MX record — short timeout
     try:
         import dns.resolver
-        mx_records = dns.resolver.resolve(domain, "MX")
+        resolver = dns.resolver.Resolver()
+        resolver.lifetime = 3  # 3 second total timeout
+        mx_records = resolver.resolve(domain, "MX")
         mx_host = str(sorted(mx_records, key=lambda r: r.preference)[0].exchange).rstrip(".")
-        # Add MX host as first candidate
         imap_candidates.insert(0, mx_host)
         smtp_candidates.insert(0, mx_host)
     except Exception:
-        pass  # dns.resolver not available or no MX record
+        pass
 
-    # Find first resolvable IMAP host
-    imap_host = f"mail.{domain}"  # default fallback
+    # Find first resolvable IMAP host — 2 second timeout per candidate
+    imap_host = default["imap_host"]
     for candidate in imap_candidates:
         try:
+            socket.setdefaulttimeout(2)
             socket.getaddrinfo(candidate, 993, socket.AF_INET, socket.SOCK_STREAM)
             imap_host = candidate
             break
-        except socket.gaierror:
+        except Exception:
             continue
+        finally:
+            socket.setdefaulttimeout(None)
 
-    # Find first resolvable SMTP host
-    smtp_host = f"mail.{domain}"  # default fallback
+    smtp_host = default["smtp_host"]
     for candidate in smtp_candidates:
         try:
+            socket.setdefaulttimeout(2)
             socket.getaddrinfo(candidate, 587, socket.AF_INET, socket.SOCK_STREAM)
             smtp_host = candidate
             break
-        except socket.gaierror:
+        except Exception:
             continue
+        finally:
+            socket.setdefaulttimeout(None)
 
     return {
         "imap_host": imap_host,
@@ -295,19 +299,26 @@ def get_email_config(user: User = Depends(get_current_user), db: Session = Depen
 
 @router.put("/settings/email", tags=["Settings"])
 def save_email_config(data: EmailConfigIn, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    resolved = _resolve_email_config(data.email, data)
-    cfg = db.query(EmailConfig).filter(EmailConfig.user_id == user.id).first()
-    if cfg:
-        # Don't overwrite password if empty
-        if not resolved.get("password"):
-            resolved.pop("password", None)
-        for k, v in resolved.items():
-            setattr(cfg, k, v)
-    else:
-        cfg = EmailConfig(user_id=user.id, **resolved)
-        db.add(cfg)
-    db.commit()
-    return {"message": "Email config saved", "imap_host": cfg.imap_host, "imap_port": cfg.imap_port}
+    try:
+        resolved = _resolve_email_config(data.email, data)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Could not resolve email settings: {str(e)}")
+    try:
+        cfg = db.query(EmailConfig).filter(EmailConfig.user_id == user.id).first()
+        if cfg:
+            if not resolved.get("password"):
+                resolved.pop("password", None)
+            for k, v in resolved.items():
+                if hasattr(cfg, k):
+                    setattr(cfg, k, v)
+        else:
+            cfg = EmailConfig(user_id=user.id, **{k: v for k, v in resolved.items() if hasattr(EmailConfig, k)})
+            db.add(cfg)
+        db.commit()
+        return {"message": "Email config saved", "imap_host": cfg.imap_host, "imap_port": cfg.imap_port}
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Failed to save email config: {str(e)}")
 
 
 @router.post("/settings/email/poll-now", tags=["Settings"])
@@ -430,54 +441,107 @@ class ModelConfigIn(BaseModel):
 
 @router.get("/settings/model", tags=["Settings"])
 def get_model_config(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    cfg = db.query(UserModelConfig).filter(UserModelConfig.user_id == user.id).first()
+    """Return all configured models and identify the active one."""
     default_model = os.environ.get("MODEL", "ollama/qwen3.5:9b")
     default_base_url = os.environ.get("OLLAMA_BASE_URL", "")
-    if not cfg:
-        return {"model_name": None, "api_key": None, "base_url": None,
-                "effective_model": default_model, "effective_base_url": default_base_url}
+
+    all_configs = db.query(UserModelConfig).filter(
+        UserModelConfig.user_id == user.id
+    ).order_by(UserModelConfig.updated_at.desc()).all()
+
+    if not all_configs:
+        return {
+            "model_name": None, "api_key": None, "base_url": None,
+            "effective_model": default_model, "effective_base_url": default_base_url,
+            "configured_models": [], "active_model": None,
+        }
+
+    configured_models = [
+        {
+            "id": c.id,
+            "model_name": c.model_name,
+            "api_key": "***" if c.api_key else None,
+            "base_url": c.base_url,
+            "status": c.status,
+            "created_at": c.created_at.isoformat(),
+            "updated_at": c.updated_at.isoformat(),
+        }
+        for c in all_configs
+    ]
+
+    active_cfg = next((c for c in all_configs if c.status == "active"), None)
+    first_cfg = all_configs[0]
+
     return {
-        "model_name": cfg.model_name,
-        "api_key": "***" if cfg.api_key else None,  # mask key
-        "base_url": cfg.base_url,
-        "effective_model": cfg.model_name or default_model,
-        "effective_base_url": cfg.base_url or default_base_url,
+        "model_name": first_cfg.model_name,
+        "api_key": "***" if first_cfg.api_key else None,
+        "base_url": first_cfg.base_url,
+        "configured_models": configured_models,
+        "active_model": {
+            "id": active_cfg.id,
+            "model_name": active_cfg.model_name,
+            "base_url": active_cfg.base_url,
+        } if active_cfg else None,
+        "effective_model": (active_cfg.model_name if active_cfg else None) or default_model,
+        "effective_base_url": (active_cfg.base_url if active_cfg else None) or default_base_url,
     }
 
 
 @router.put("/settings/model", tags=["Settings"])
-@router.put("/settings/model", tags=["Settings"])
 def save_model_config(data: ModelConfigIn, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    cfg = db.query(UserModelConfig).filter(UserModelConfig.user_id == user.id).first()
-    # Never overwrite a real key with the masked placeholder "***"
+    """Save a new model config and mark it active; mark all others inactive."""
     incoming_key = data.api_key if (data.api_key and data.api_key != "***") else None
-    if cfg:
-        if data.model_name is not None:
-            cfg.model_name = data.model_name or None
-        # Only update key if a real new value was provided; keep existing key otherwise
-        if incoming_key:
-            cfg.api_key = incoming_key
-        if data.base_url is not None:
-            cfg.base_url = data.base_url or None
-    else:
-        cfg = UserModelConfig(
-            user_id=user.id,
-            model_name=data.model_name or None,
-            api_key=incoming_key,
-            base_url=data.base_url or None,
-        )
-        db.add(cfg)
+
+    # Mark all existing configs inactive
+    db.query(UserModelConfig).filter(UserModelConfig.user_id == user.id).update({"status": "inactive"})
+
+    # Create new active config
+    new_cfg = UserModelConfig(
+        user_id=user.id,
+        model_name=data.model_name or None,
+        api_key=incoming_key,
+        base_url=data.base_url or None,
+        status="active",
+    )
+    db.add(new_cfg)
     db.commit()
-    return {"message": "Model config saved"}
+    return {"message": "Model config saved and activated", "config_id": new_cfg.id}
+
+
+@router.patch("/settings/model/{config_id}/activate", tags=["Settings"])
+def activate_model_config(config_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """Activate a specific saved model config; deactivate all others."""
+    cfg = db.query(UserModelConfig).filter(
+        UserModelConfig.id == config_id, UserModelConfig.user_id == user.id
+    ).first()
+    if not cfg:
+        raise HTTPException(status_code=404, detail="Model config not found")
+
+    db.query(UserModelConfig).filter(UserModelConfig.user_id == user.id).update({"status": "inactive"})
+    cfg.status = "active"
+    cfg.updated_at = datetime.utcnow()
+    db.commit()
+    return {"message": "Model activated", "config_id": cfg.id, "model_name": cfg.model_name}
+
+
+@router.delete("/settings/model/{config_id}", tags=["Settings"])
+def delete_model_config(config_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """Delete a specific saved model config."""
+    cfg = db.query(UserModelConfig).filter(
+        UserModelConfig.id == config_id, UserModelConfig.user_id == user.id
+    ).first()
+    if not cfg:
+        raise HTTPException(status_code=404, detail="Model config not found")
+    db.delete(cfg)
+    db.commit()
+    return {"message": "Model config deleted", "config_id": config_id}
 
 
 @router.delete("/settings/model", tags=["Settings"])
 def reset_model_config(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    """Reset to system defaults."""
-    cfg = db.query(UserModelConfig).filter(UserModelConfig.user_id == user.id).first()
-    if cfg:
-        db.delete(cfg)
-        db.commit()
+    """Reset to system defaults — mark all user model configs inactive."""
+    db.query(UserModelConfig).filter(UserModelConfig.user_id == user.id).update({"status": "inactive"})
+    db.commit()
     return {"message": "Reset to system defaults"}
 
 
@@ -644,7 +708,6 @@ def health(db: Session = Depends(get_db)):
     except Exception:
         pass
 
-    # DB check
     db_ok = False
     try:
         db.execute(__import__("sqlalchemy").text("SELECT 1"))

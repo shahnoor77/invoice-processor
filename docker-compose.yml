@@ -21,7 +21,7 @@ services:
 
   # ── InvoiceIQ API + Frontend ──────────────────────────────────────────────────
   api:
-    image: shahnoor77/invoiceiq:v1
+    image: shahnoor77/invoiceiq:latest
     restart: unless-stopped
     ports:
       - "85:80"

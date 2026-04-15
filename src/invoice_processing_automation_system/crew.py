@@ -15,6 +15,14 @@ _DEFAULT_BASE_URL = "http://110.39.187.178:11434"
 
 litellm.add_function_to_prompt = True
 
+# LLM instance cache — keyed by (model, api_key, base_url, temperature)
+# Avoids recreating identical LLM objects for each agent in a crew run
+_llm_cache: dict[str, LLM] = {}
+
+
+def _llm_cache_key(cfg: "ModelConfig", temperature: float) -> str:
+    return f"{cfg.model}:{cfg.api_key or ''}:{cfg.base_url or ''}:{temperature}"
+
 
 @dataclass
 class ModelConfig:
@@ -42,12 +50,17 @@ class ModelConfig:
 
 def make_llm(temperature: float = 0.1, cfg: Optional[ModelConfig] = None) -> LLM:
     """
-    Build an LLM instance from an explicit ModelConfig.
+    Build (or return cached) LLM instance from a ModelConfig.
     Falls back to process environment when cfg is None.
     Never mutates os.environ — safe for concurrent threads.
     """
     if cfg is None:
         cfg = ModelConfig.from_env()
+
+    # Return cached instance if same config was used before
+    key = _llm_cache_key(cfg, temperature)
+    if key in _llm_cache:
+        return _llm_cache[key]
 
     is_ollama = cfg.model.startswith("ollama/")
 
@@ -60,7 +73,7 @@ def make_llm(temperature: float = 0.1, cfg: Optional[ModelConfig] = None) -> LLM
     if not is_ollama and not cfg.api_key:
         log.warning(f"[LLM] Cloud model {cfg.model} has no api_key — requests will likely fail")
 
-    return LLM(
+    llm = LLM(
         model=cfg.model,
         base_url=cfg.base_url if is_ollama else None,
         api_key=cfg.api_key if (not is_ollama and cfg.api_key) else None,
@@ -70,6 +83,8 @@ def make_llm(temperature: float = 0.1, cfg: Optional[ModelConfig] = None) -> LLM
         max_tokens=4096,
         **extra_kwargs,
     )
+    _llm_cache[key] = llm
+    return llm
 
 
 @CrewBase

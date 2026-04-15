@@ -14,6 +14,8 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from threading import Thread, Lock
+from typing import Optional, Any
+from pydantic import BaseModel, field_validator, model_validator
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "src"))
 from dotenv import load_dotenv
@@ -70,6 +72,222 @@ def _parse_json(text: str):
                 except Exception:
                     pass
     return None
+
+
+# ── Pydantic coercion models ──────────────────────────────────────────────────
+# Used to normalize raw LLM output before validation/DB save.
+# All fields are Optional — we never reject partial data.
+# Validators coerce common LLM quirks: "25,000.00" → 25000.0, "N/A" → None, etc.
+
+_NULL_STRINGS = {"null", "none", "n/a", "na", "nil", "-", "", "undefined"}
+
+def _coerce_str(v: Any) -> Optional[str]:
+    if v is None:
+        return None
+    s = str(v).strip()
+    return None if s.lower() in _NULL_STRINGS else s
+
+def _coerce_float(v: Any) -> Optional[float]:
+    if v is None:
+        return None
+    try:
+        return float(str(v).replace(",", "").replace(" ", "").strip())
+    except Exception:
+        return None
+
+def _coerce_date(v: Any) -> Optional[str]:
+    """Try to normalize dates to YYYY-MM-DD. Returns as-is if can't parse."""
+    if v is None:
+        return None
+    s = str(v).strip()
+    if s.lower() in _NULL_STRINGS:
+        return None
+    # Already correct format
+    if re.match(r"^\d{4}-\d{2}-\d{2}$", s):
+        return s
+    # Try common formats
+    for fmt in ("%b %d, %Y", "%B %d, %Y", "%d/%m/%Y", "%m/%d/%Y",
+                "%d-%m-%Y", "%m-%d-%Y", "%d %b %Y", "%d %B %Y"):
+        try:
+            from datetime import datetime as dt
+            return dt.strptime(s, fmt).strftime("%Y-%m-%d")
+        except Exception:
+            pass
+    return s  # return as-is rather than lose the value
+
+
+class _BankModel(BaseModel):
+    model_config = {"extra": "ignore"}
+    bank_name: Optional[str] = None
+    account_holder: Optional[str] = None
+    account_number: Optional[str] = None
+    iban: Optional[str] = None
+    swift_bic: Optional[str] = None
+    routing_number: Optional[str] = None
+    sort_code: Optional[str] = None
+    branch: Optional[str] = None
+    bank_address: Optional[str] = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def coerce_strings(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return {}
+        return {k: _coerce_str(v) for k, v in data.items()}
+
+
+class _PartyModel(BaseModel):
+    model_config = {"extra": "ignore"}
+    name: Optional[str] = None
+    address: Optional[str] = None
+    city: Optional[str] = None
+    state: Optional[str] = None
+    zip: Optional[str] = None
+    country: Optional[str] = None
+    phone: Optional[str] = None
+    email: Optional[str] = None
+    website: Optional[str] = None
+    tax_id: Optional[str] = None
+    vat_number: Optional[str] = None
+    registration_number: Optional[str] = None
+    bank: Optional[_BankModel] = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def coerce_fields(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return {}
+        result = {}
+        for k, v in data.items():
+            if k == "bank":
+                result[k] = v if isinstance(v, dict) else {}
+            else:
+                result[k] = _coerce_str(v)
+        return result
+
+
+class _LineItemModel(BaseModel):
+    model_config = {"extra": "ignore"}
+    description: Optional[str] = None
+    quantity: Optional[float] = None
+    unit: Optional[str] = None
+    unit_price: Optional[float] = None
+    discount_percent: Optional[float] = None
+    discount_amount: Optional[float] = None
+    tax_percent: Optional[float] = None
+    tax_amount: Optional[float] = None
+    total: Optional[float] = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def coerce_fields(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return {}
+        result = {}
+        for k, v in data.items():
+            if k in ("description", "unit"):
+                result[k] = _coerce_str(v)
+            else:
+                result[k] = _coerce_float(v)
+        return result
+
+
+class InvoiceExtraction(BaseModel):
+    """Pydantic model for LLM-extracted invoice data. Coerces, never raises."""
+    model_config = {"extra": "ignore"}
+
+    sender: Optional[_PartyModel] = None
+    receiver: Optional[_PartyModel] = None
+    invoice_number: Optional[str] = None
+    invoice_date: Optional[str] = None
+    due_date: Optional[str] = None
+    delivery_date: Optional[str] = None
+    purchase_order: Optional[str] = None
+    payment_terms: Optional[str] = None
+    payment_method: Optional[str] = None
+    reference: Optional[str] = None
+    line_items: Optional[list[_LineItemModel]] = None
+    subtotal: Optional[float] = None
+    discount_total: Optional[float] = None
+    discount_percent: Optional[float] = None
+    tax_rate: Optional[float] = None
+    tax_amount: Optional[float] = None
+    tax_type: Optional[str] = None
+    shipping: Optional[float] = None
+    handling: Optional[float] = None
+    other_charges: Optional[float] = None
+    total_amount: Optional[float] = None
+    amount_paid: Optional[float] = None
+    amount_due: Optional[float] = None
+    deposit: Optional[float] = None
+    currency: Optional[str] = None
+    exchange_rate: Optional[float] = None
+    notes: Optional[str] = None
+    terms_and_conditions: Optional[str] = None
+    confidence: Optional[str] = "HIGH"
+
+    @field_validator("invoice_date", "due_date", "delivery_date", mode="before")
+    @classmethod
+    def coerce_date(cls, v: Any) -> Any:
+        return _coerce_date(v)
+
+    @field_validator("invoice_number", "purchase_order", "reference",
+                     "payment_terms", "payment_method", "tax_type",
+                     "currency", "notes", "terms_and_conditions", "confidence", mode="before")
+    @classmethod
+    def coerce_str(cls, v: Any) -> Any:
+        return _coerce_str(v)
+
+    @field_validator("subtotal", "discount_total", "discount_percent", "tax_rate",
+                     "tax_amount", "shipping", "handling", "other_charges",
+                     "total_amount", "amount_paid", "amount_due", "deposit",
+                     "exchange_rate", mode="before")
+    @classmethod
+    def coerce_num(cls, v: Any) -> Any:
+        return _coerce_float(v)
+
+    @model_validator(mode="before")
+    @classmethod
+    def reject_refusal(cls, data: Any) -> Any:
+        """Reject dicts that look like model refusals rather than invoice data."""
+        if not isinstance(data, dict):
+            raise ValueError("Not a dict")
+        real_keys = {"invoice_number", "sender", "receiver", "line_items",
+                     "total_amount", "subtotal", "amount_due"}
+        if not real_keys.intersection(data.keys()):
+            raise ValueError(f"Looks like a refusal response, not invoice data: {list(data.keys())}")
+        return data
+
+    def to_dict(self) -> dict:
+        """Convert back to plain dict for downstream processing."""
+        d = self.model_dump(exclude_none=False)
+        # Convert nested models back to dicts
+        if self.sender:
+            d["sender"] = self.sender.model_dump(exclude_none=False)
+            if self.sender.bank:
+                d["sender"]["bank"] = self.sender.bank.model_dump(exclude_none=False)
+        if self.receiver:
+            d["receiver"] = self.receiver.model_dump(exclude_none=False)
+            if self.receiver.bank:
+                d["receiver"]["bank"] = self.receiver.bank.model_dump(exclude_none=False)
+        if self.line_items:
+            d["line_items"] = [li.model_dump(exclude_none=False) for li in self.line_items]
+        return d
+
+
+def _coerce_extracted(raw: dict) -> dict:
+    """
+    Run raw LLM output through Pydantic coercion.
+    Returns the coerced dict, or the original if validation fails entirely.
+    """
+    try:
+        parsed = InvoiceExtraction.model_validate(raw)
+        coerced = parsed.to_dict()
+        log.info(f"[Coerce] Pydantic coercion OK — invoice_number={coerced.get('invoice_number')!r}")
+        return coerced
+    except Exception as e:
+        log.warning(f"[Coerce] Pydantic coercion failed ({e}) — using raw dict")
+        return raw
 
 
 def _safe_float(v) -> float | None:
@@ -408,7 +626,7 @@ def _extract_ocr(file_path: str) -> str:
 def _resolve_model_config(user_id: str | None) -> "ModelConfig":
     """
     Return a ModelConfig for the given user.
-    Checks user_model_configs table first; falls back to process env.
+    Picks the row with status='active' first; falls back to process env.
     Never mutates os.environ — safe for concurrent threads.
     """
     from invoice_processing_automation_system.crew import ModelConfig
@@ -416,7 +634,19 @@ def _resolve_model_config(user_id: str | None) -> "ModelConfig":
         try:
             from models import UserModelConfig
             db_tmp = SessionLocal()
-            ucfg = db_tmp.query(UserModelConfig).filter(UserModelConfig.user_id == user_id).first()
+            # Prefer active config; fall back to most recently updated
+            ucfg = (
+                db_tmp.query(UserModelConfig)
+                .filter(UserModelConfig.user_id == user_id, UserModelConfig.status == "active")
+                .first()
+            )
+            if not ucfg:
+                ucfg = (
+                    db_tmp.query(UserModelConfig)
+                    .filter(UserModelConfig.user_id == user_id)
+                    .order_by(UserModelConfig.updated_at.desc())
+                    .first()
+                )
             db_tmp.close()
             if ucfg and ucfg.model_name:
                 user_model = ucfg.model_name
@@ -428,10 +658,10 @@ def _resolve_model_config(user_id: str | None) -> "ModelConfig":
                     base_url=ucfg.base_url or (default.base_url if is_ollama else None),
                     api_key=real_key or (None if is_ollama else default.api_key),
                 )
-                log.info(f"[Model] User {user_id[:8]}… → custom config: {resolved.describe()}")
+                log.info(f"[Model] User {user_id[:8]}… → {ucfg.status} config: {resolved.describe()}")
                 return resolved
             else:
-                log.info(f"[Model] User {user_id[:8]}… → no custom config, using system default")
+                log.info(f"[Model] User {user_id[:8]}… → no active config, using system default")
         except Exception as e:
             log.warning(f"[Model] Could not load user model config for {user_id}: {e} — falling back to env default")
 
@@ -682,8 +912,9 @@ def process_job(job: ProcessingJob, db) -> bool:
 
         log.info(f"[Job {job.id[:8]}] AI extraction complete — invoice_number={extracted.get('invoice_number')!r} total={extracted.get('total_amount')!r}")
 
-        # ── Step 3: Validate & save ───────────────────────────────────────────
-        log.info(f"[Job {job.id[:8]}] Step 3/3 — Validation & DB save")
+        # ── Step 3: Coerce → Validate → Save ─────────────────────────────────
+        log.info(f"[Job {job.id[:8]}] Step 3/3 — Coercion, Validation & DB save")
+        extracted = _coerce_extracted(extracted)
         extracted = _validate_and_correct(extracted)
         issues = extracted.get("validation_issues", [])
         if issues:

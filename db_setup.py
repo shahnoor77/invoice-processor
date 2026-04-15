@@ -86,7 +86,9 @@ def cmd_migrate():
             # Columns that may have been removed from old schema
             ("bank_details", "TEXT"),  # kept for backward compat
         ],
-        "user_model_configs": [],
+        "user_model_configs": [
+            ("status", "VARCHAR DEFAULT 'inactive'"),
+        ],
     }
 
     added = 0
@@ -118,6 +120,18 @@ def cmd_migrate():
     # Also run init_db to create any new tables
     from database import init_db
     init_db()
+
+    # Drop unique constraint on user_model_configs.user_id if it exists
+    # (needed to allow multiple model configs per user)
+    with engine.connect() as conn:
+        try:
+            conn.execute(text(
+                "ALTER TABLE user_model_configs DROP CONSTRAINT IF EXISTS user_model_configs_user_id_key"
+            ))
+            conn.commit()
+            print("  ✅ Dropped unique constraint on user_model_configs.user_id (allows multiple configs per user)")
+        except Exception:
+            pass  # already dropped or doesn't exist
 
     print(f"\nMigration complete: {added} column(s) added, {skipped} already existed.")
 

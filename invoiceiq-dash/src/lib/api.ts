@@ -74,6 +74,8 @@ export const apiTestWebhook = (id: string) => req('POST', `/settings/webhooks/${
 export const apiGetModelConfig = () => req('GET', '/settings/model')
 export const apiSaveModelConfig = (data: unknown) => req('PUT', '/settings/model', data)
 export const apiResetModelConfig = () => req('DELETE', '/settings/model')
+export const apiActivateModelConfig = (id: string) => req('PATCH', `/settings/model/${id}/activate`)
+export const apiDeleteModelConfig = (id: string) => req('DELETE', `/settings/model/${id}`)
 
 // Types matching our DB schema
 export interface RealInvoice {

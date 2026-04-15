@@ -1,17 +1,25 @@
 import { useState, useEffect } from 'react';
 import { motion } from 'framer-motion';
-import { Loader2, RotateCcw, CheckCircle, Info, Server } from 'lucide-react';
+import { Loader2, RotateCcw, CheckCircle, Info, Server, Plus, Trash2, Zap } from 'lucide-react';
 import { toast } from 'sonner';
 import { apiGetModelConfig, apiSaveModelConfig, apiResetModelConfig } from '@/lib/api';
 
 const PRESET_MODELS = [
-  { label: 'System Default (from server config)', value: '', needsKey: false, needsUrl: false, isDefault: true },
+  { label: 'System Default (from server config)', value: '', needsKey: false, needsUrl: false },
   { label: 'Groq llama-3.3-70b (fast, free)', value: 'groq/llama-3.3-70b-versatile', needsKey: true, needsUrl: false },
   { label: 'Gemini 2.0 Flash', value: 'gemini/gemini-2.0-flash', needsKey: true, needsUrl: false },
   { label: 'OpenAI GPT-4o Mini', value: 'openai/gpt-4o-mini', needsKey: true, needsUrl: false },
   { label: 'Ollama (custom server)', value: 'ollama/custom', needsKey: false, needsUrl: true },
   { label: 'Custom model', value: 'custom', needsKey: true, needsUrl: true },
 ];
+
+interface SavedConfig {
+  id: string;
+  model_name: string | null;
+  api_key: string | null;
+  base_url: string | null;
+  status: string;
+}
 
 interface Props {
   onBack: () => void;
@@ -20,36 +28,25 @@ interface Props {
 
 export function ModelConfigForm({ onBack, onComplete }: Props) {
   const [config, setConfig] = useState<any>(null);
+  const [savedConfigs, setSavedConfigs] = useState<SavedConfig[]>([]);
+  const [showForm, setShowForm] = useState(false);
   const [selectedPreset, setSelectedPreset] = useState('');
   const [modelName, setModelName] = useState('');
   const [apiKey, setApiKey] = useState('');
   const [baseUrl, setBaseUrl] = useState('');
   const [saving, setSaving] = useState(false);
   const [resetting, setResetting] = useState(false);
-  const [editing, setEditing] = useState(false);
+  const [activating, setActivating] = useState<string | null>(null);
+  const [deleting, setDeleting] = useState<string | null>(null);
 
-  useEffect(() => {
+  const load = () => {
     apiGetModelConfig().then((cfg: any) => {
       setConfig(cfg);
-      if (cfg.model_name) {
-        // Match to a known preset
-        const knownPreset = PRESET_MODELS.find(p => !p.isDefault && p.value !== 'custom' && p.value !== 'ollama/custom' && p.value === cfg.model_name);
-        if (knownPreset) {
-          setSelectedPreset(knownPreset.value);
-        } else if (cfg.model_name.startsWith('ollama/')) {
-          setSelectedPreset('ollama/custom');
-          setModelName(cfg.model_name);
-        } else {
-          setSelectedPreset('custom');
-          setModelName(cfg.model_name);
-        }
-        if (cfg.base_url) setBaseUrl(cfg.base_url);
-        // Never pre-fill api_key — backend masks it as "***"
-      } else {
-        setSelectedPreset(''); // system default
-      }
+      setSavedConfigs(cfg.configured_models || []);
     }).catch(() => {});
-  }, []);
+  };
+
+  useEffect(() => { load(); }, []);
 
   const preset = PRESET_MODELS.find(p => p.value === selectedPreset);
   const isDefault = selectedPreset === '';
@@ -66,9 +63,9 @@ export function ModelConfigForm({ onBack, onComplete }: Props) {
       setResetting(true);
       try {
         await apiResetModelConfig();
-        setConfig((c: any) => c ? { ...c, model_name: null, api_key: null, base_url: null } : c);
-        toast.success('Using system default model');
-        setEditing(false);
+        toast.success('Reset to system default');
+        load();
+        setShowForm(false);
         onComplete();
       } catch (e: any) { toast.error(e.message); }
       setResetting(false);
@@ -80,148 +77,168 @@ export function ModelConfigForm({ onBack, onComplete }: Props) {
       if (selectedPreset === 'custom' || selectedPreset === 'ollama/custom') finalModel = modelName.trim();
       if (!finalModel) { toast.error('Please enter a model name'); setSaving(false); return; }
       await apiSaveModelConfig({ model_name: finalModel, api_key: apiKey.trim() || null, base_url: baseUrl.trim() || null });
-      setConfig((c: any) => ({ ...c, model_name: finalModel, effective_model: finalModel }));
-      setEditing(false);
-      toast.success('Model configuration saved');
+      toast.success('Model saved and activated');
+      load();
+      setShowForm(false);
+      setModelName(''); setApiKey(''); setBaseUrl(''); setSelectedPreset('');
       onComplete();
     } catch (e: any) { toast.error('Failed to save: ' + e.message); }
     setSaving(false);
   };
 
-  const handleReset = async () => {
-    setResetting(true);
+  const handleActivate = async (id: string) => {
+    setActivating(id);
     try {
-      await apiResetModelConfig();
-      setModelName(''); setApiKey(''); setBaseUrl('');
-      setSelectedPreset('');
-      setConfig((c: any) => c ? { ...c, model_name: null, api_key: null, base_url: null } : c);
-      toast.success('Reset to system default');
-    } catch (e: any) {
-      toast.error(e.message);
-    }
-    setResetting(false);
+      await fetch(`/api/settings/model/${id}/activate`, {
+        method: 'PATCH',
+        headers: { Authorization: `Bearer ${localStorage.getItem('token')}` },
+      });
+      toast.success('Model activated');
+      load();
+    } catch (e: any) { toast.error(e.message); }
+    setActivating(null);
+  };
+
+  const handleDelete = async (id: string) => {
+    setDeleting(id);
+    try {
+      await fetch(`/api/settings/model/${id}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${localStorage.getItem('token')}` },
+      });
+      toast.success('Model config deleted');
+      load();
+    } catch (e: any) { toast.error(e.message); }
+    setDeleting(null);
   };
 
   const inputClass = 'w-full rounded-lg border border-border bg-surface-2 px-3 py-2.5 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary transition-all';
   const labelClass = 'block text-sm font-medium text-foreground mb-1.5';
 
-  // Saved state card
-  if (config !== null && !editing) {
-    return (
-      <div>
-        <div className="flex items-start justify-between mb-4">
-          <p className="text-xs text-muted-foreground">Active model for invoice extraction.</p>
-          <div className="flex gap-2">
-            {config.model_name && (
-              <button onClick={handleReset} disabled={resetting}
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-border text-xs font-medium text-muted-foreground hover:bg-muted transition-all disabled:opacity-50">
-                {resetting ? <Loader2 size={12} className="animate-spin" /> : <RotateCcw size={12} />} Reset
-              </button>
-            )}
-            <button onClick={() => setEditing(true)}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-border text-xs font-medium text-foreground hover:bg-muted transition-all">
-              <span className="text-xs">✎</span> Edit
-            </button>
-          </div>
-        </div>
-        <div className="border border-border rounded-xl p-4 bg-surface-2">
-          <div className="flex items-center gap-3">
-            <div className="w-9 h-9 rounded-lg bg-primary/10 flex items-center justify-center flex-shrink-0">
-              <Server size={15} className="text-primary" />
-            </div>
-            <div>
-              <p className="text-sm font-medium text-foreground">{config.effective_model}</p>
-              <p className="text-xs text-muted-foreground">
-                {config.model_name ? 'Custom model' : 'System default'}
-                {config.api_key ? ' · API key saved' : ''}
-              </p>
-            </div>
-          </div>
-        </div>
-      </div>
-    );
-  }
-
   return (
     <div>
-      <div className="mb-4 flex items-start justify-between">
-        <p className="text-xs text-muted-foreground">Override the AI model for your account. Leave on system default if unsure.</p>
-        {editing && <button onClick={() => setEditing(false)} className="text-xs text-muted-foreground hover:text-foreground">Cancel</button>}
+      <div className="mb-5">
+        <h2 className="text-xl font-bold text-foreground">AI Model Configuration</h2>
+        <p className="text-muted-foreground text-sm mt-1">
+          Save multiple model configs and activate the one you want to use.
+        </p>
       </div>
 
-      {/* Current effective model info */}
+      {/* Active model banner */}
       {config && (
-        <div className="mb-4 p-3 rounded-lg bg-surface-2 border border-border text-sm text-muted-foreground flex items-center gap-2">
-          <Server size={14} className="flex-shrink-0" />
-          <span>Active: <strong className="text-foreground">{config.effective_model}</strong>
-            {!config.model_name && <span className="ml-1 text-xs text-primary">(system default)</span>}
+        <div className="mb-4 p-3 rounded-lg bg-surface-2 border border-border text-sm flex items-center gap-2">
+          <Server size={14} className="flex-shrink-0 text-primary" />
+          <span className="text-muted-foreground">Active: <strong className="text-foreground">{config.effective_model}</strong>
+            {!config.active_model && <span className="ml-1 text-xs text-primary">(system default)</span>}
           </span>
         </div>
       )}
 
-      <div className="space-y-4">
-        <div>
-          <label className={labelClass}>Model</label>
-          <select value={selectedPreset} onChange={e => handlePresetChange(e.target.value)} className={inputClass}>
-            {PRESET_MODELS.map(p => (
-              <option key={p.value} value={p.value}>{p.label}</option>
-            ))}
-          </select>
+      {/* Saved configs list */}
+      {savedConfigs.length > 0 && (
+        <div className="mb-4 space-y-2">
+          {savedConfigs.map(c => (
+            <div key={c.id}
+              className={`flex items-center justify-between p-3 rounded-lg border text-sm ${c.status === 'active' ? 'border-success/40 bg-success/5' : 'border-border bg-surface-2'}`}>
+              <div className="flex items-center gap-2 min-w-0">
+                {c.status === 'active' && <CheckCircle size={13} className="text-success flex-shrink-0" />}
+                <div className="min-w-0">
+                  <p className="text-xs font-medium text-foreground truncate">{c.model_name || 'System default'}</p>
+                  <p className="text-[11px] text-muted-foreground">
+                    {c.status === 'active' ? 'Active' : 'Inactive'}
+                    {c.api_key ? ' · key saved' : ''}
+                    {c.base_url ? ` · ${c.base_url}` : ''}
+                  </p>
+                </div>
+              </div>
+              <div className="flex items-center gap-1.5 flex-shrink-0">
+                {c.status !== 'active' && (
+                  <button onClick={() => handleActivate(c.id)} disabled={activating === c.id}
+                    className="flex items-center gap-1 px-2 py-1 rounded-md border border-primary/30 text-[11px] font-medium text-primary hover:bg-primary/10 transition-all disabled:opacity-50">
+                    {activating === c.id ? <Loader2 size={10} className="animate-spin" /> : <Zap size={10} />} Activate
+                  </button>
+                )}
+                <button onClick={() => handleDelete(c.id)} disabled={deleting === c.id}
+                  className="p-1.5 rounded-md border border-destructive/30 text-destructive hover:bg-destructive/10 transition-all disabled:opacity-50">
+                  {deleting === c.id ? <Loader2 size={11} className="animate-spin" /> : <Trash2 size={11} />}
+                </button>
+              </div>
+            </div>
+          ))}
         </div>
+      )}
 
-        {isDefault && (
-          <div className="p-3 rounded-lg bg-primary/5 border border-primary/20 text-xs text-muted-foreground flex items-start gap-2">
-            <Info size={13} className="mt-0.5 flex-shrink-0 text-primary" />
-            <span>The server's configured model will be used. No API key required from you.</span>
+      {/* Add new config form */}
+      {showForm ? (
+        <div className="border border-border rounded-xl p-4 space-y-4">
+          <div className="flex items-center justify-between">
+            <p className="text-sm font-medium text-foreground">Add Model Config</p>
+            <button onClick={() => setShowForm(false)} className="text-xs text-muted-foreground hover:text-foreground">Cancel</button>
           </div>
-        )}
 
-        {selectedPreset === 'ollama/custom' && (
-          <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }} className="space-y-3">
-            <div>
-              <label className={labelClass}>Model Name</label>
-              <input value={modelName} onChange={e => setModelName(e.target.value)} placeholder="e.g. ollama/llama3.1:8b" className={inputClass} />
-            </div>
-            <div>
-              <label className={labelClass}>Ollama Base URL</label>
-              <input value={baseUrl} onChange={e => setBaseUrl(e.target.value)} placeholder="http://your-ollama-server:11434" className={inputClass} />
-              <p className="text-xs text-muted-foreground mt-1">Leave blank to use the server's default Ollama URL</p>
-            </div>
-          </motion.div>
-        )}
+          <div>
+            <label className={labelClass}>Model</label>
+            <select value={selectedPreset} onChange={e => handlePresetChange(e.target.value)} className={inputClass}>
+              {PRESET_MODELS.map(p => <option key={p.value} value={p.value}>{p.label}</option>)}
+            </select>
+          </div>
 
-        {selectedPreset === 'custom' && (
-          <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }} className="space-y-3">
-            <div>
-              <label className={labelClass}>Model Name</label>
-              <input value={modelName} onChange={e => setModelName(e.target.value)} placeholder="e.g. groq/mixtral-8x7b or openai/gpt-4o" className={inputClass} />
-              <p className="text-xs text-muted-foreground mt-1">Format: provider/model-name</p>
+          {isDefault && (
+            <div className="p-3 rounded-lg bg-primary/5 border border-primary/20 text-xs text-muted-foreground flex items-start gap-2">
+              <Info size={13} className="mt-0.5 flex-shrink-0 text-primary" />
+              <span>Will reset to server's configured model. No API key required.</span>
             </div>
-            <div>
+          )}
+
+          {selectedPreset === 'ollama/custom' && (
+            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-3">
+              <div>
+                <label className={labelClass}>Model Name</label>
+                <input value={modelName} onChange={e => setModelName(e.target.value)} placeholder="e.g. ollama/llama3.1:8b" className={inputClass} />
+              </div>
+              <div>
+                <label className={labelClass}>Ollama Base URL</label>
+                <input value={baseUrl} onChange={e => setBaseUrl(e.target.value)} placeholder="http://your-ollama-server:11434" className={inputClass} />
+              </div>
+            </motion.div>
+          )}
+
+          {selectedPreset === 'custom' && (
+            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-3">
+              <div>
+                <label className={labelClass}>Model Name</label>
+                <input value={modelName} onChange={e => setModelName(e.target.value)} placeholder="e.g. groq/mixtral-8x7b" className={inputClass} />
+              </div>
+              <div>
+                <label className={labelClass}>API Key</label>
+                <input type="password" value={apiKey} onChange={e => setApiKey(e.target.value)} placeholder="Your API key" className={inputClass} />
+              </div>
+              <div>
+                <label className={labelClass}>Base URL (optional)</label>
+                <input value={baseUrl} onChange={e => setBaseUrl(e.target.value)} placeholder="Only for self-hosted endpoints" className={inputClass} />
+              </div>
+            </motion.div>
+          )}
+
+          {preset?.needsKey && !preset?.needsUrl && selectedPreset !== 'custom' && (
+            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
               <label className={labelClass}>API Key</label>
-              <input type="password" value={apiKey} onChange={e => setApiKey(e.target.value)}
-                placeholder={config?.api_key ? 'Leave blank to keep existing key' : 'Your API key'} className={inputClass} />
-            </div>
-            <div>
-              <label className={labelClass}>Base URL (optional)</label>
-              <input value={baseUrl} onChange={e => setBaseUrl(e.target.value)} placeholder="Only needed for self-hosted endpoints" className={inputClass} />
-            </div>
-          </motion.div>
-        )}
+              <input type="password" value={apiKey} onChange={e => setApiKey(e.target.value)} placeholder="Your API key" className={inputClass} />
+            </motion.div>
+          )}
 
-        {preset?.needsKey && !preset?.needsUrl && selectedPreset !== 'custom' && (
-          <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }}>
-            <label className={labelClass}>API Key</label>
-            <input type="password" value={apiKey} onChange={e => setApiKey(e.target.value)}
-              placeholder={config?.api_key ? 'Leave blank to keep existing key' : 'Your API key'} className={inputClass} />
-            {config?.api_key && (
-              <p className="text-xs text-success mt-1 flex items-center gap-1">
-                <CheckCircle size={11} /> API key already saved
-              </p>
-            )}
-          </motion.div>
-        )}
-      </div>
+          <button onClick={handleSave} disabled={saving || resetting}
+            className="w-full h-9 rounded-lg bg-primary text-primary-foreground text-sm font-medium hover:bg-primary-dark transition-all disabled:opacity-50 flex items-center justify-center gap-2">
+            {(saving || resetting) && <Loader2 size={13} className="animate-spin" />}
+            Save & Activate
+          </button>
+        </div>
+      ) : (
+        <button onClick={() => setShowForm(true)}
+          className="w-full h-9 rounded-lg border border-dashed border-border text-sm text-muted-foreground hover:border-primary hover:text-primary transition-all flex items-center justify-center gap-2">
+          <Plus size={14} /> Add Model Config
+        </button>
+      )}
 
       <div className="flex items-center justify-between pt-6">
         <div className="flex gap-2">
@@ -229,25 +246,15 @@ export function ModelConfigForm({ onBack, onComplete }: Props) {
             className="px-4 h-10 rounded-lg border border-border text-sm font-medium text-foreground hover:bg-muted transition-all">
             ← Back
           </button>
-          {!isDefault && (
-            <button type="button" onClick={handleReset} disabled={resetting}
-              className="px-4 h-10 rounded-lg border border-border text-sm font-medium text-muted-foreground hover:bg-muted transition-all flex items-center gap-2 disabled:opacity-50">
-              {resetting ? <Loader2 size={14} className="animate-spin" /> : <RotateCcw size={14} />}
-              Use System Default
-            </button>
-          )}
-        </div>
-        <div className="flex gap-2">
-          <button type="button" onClick={onComplete}
-            className="px-4 h-10 rounded-lg border border-border text-sm font-medium text-muted-foreground hover:bg-muted transition-all">
-            Skip
-          </button>
-          <button type="button" onClick={handleSave} disabled={saving || resetting}
-            className="px-6 h-10 rounded-lg bg-primary text-primary-foreground text-sm font-medium hover:bg-primary-dark transition-all active:scale-[0.97] disabled:opacity-50 flex items-center gap-2">
-            {(saving || resetting) && <Loader2 size={14} className="animate-spin" />}
-            {isDefault ? 'Use Default →' : 'Save & Finish →'}
+          <button type="button" onClick={() => { apiResetModelConfig().then(() => { toast.success('Reset to system default'); load(); }).catch(e => toast.error(e.message)); }}
+            className="px-4 h-10 rounded-lg border border-border text-sm font-medium text-muted-foreground hover:bg-muted transition-all flex items-center gap-2">
+            <RotateCcw size={13} /> Use System Default
           </button>
         </div>
+        <button type="button" onClick={onComplete}
+          className="px-6 h-10 rounded-lg bg-primary text-primary-foreground text-sm font-medium hover:bg-primary-dark transition-all">
+          Finish →
+        </button>
       </div>
     </div>
   );
