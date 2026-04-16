@@ -38,7 +38,7 @@ structured_data_extraction:
     - dates: YYYY-MM-DD format
     - numeric fields: numbers only, no currency symbols
     - missing fields: null
-
+    - Only enter the valid numerical values even if written differently in the text (e.g. "00.00"= 0.0 ,one hundred dollars" = 100, "50%" = 50, "$1,000.00" = 1000)
     Output ONLY this JSON with values filled in (no explanation, no markdown, no extra text):
     {"sender":{"name":null,"address":null,"city":null,"state":null,"zip":null,"country":null,"phone":null,"email":null,"website":null,"tax_id":null,"vat_number":null,"registration_number":null,"bank":{"bank_name":null,"account_holder":null,"account_number":null,"iban":null,"swift_bic":null,"routing_number":null,"sort_code":null,"branch":null,"bank_address":null}},"receiver":{"name":null,"address":null,"city":null,"state":null,"zip":null,"country":null,"phone":null,"email":null,"tax_id":null,"vat_number":null,"bank":{"bank_name":null,"account_holder":null,"account_number":null,"iban":null,"swift_bic":null,"routing_number":null,"sort_code":null,"branch":null}},"invoice_number":null,"invoice_date":null,"due_date":null,"delivery_date":null,"purchase_order":null,"payment_terms":null,"payment_method":null,"reference":null,"line_items":[{"description":null,"quantity":null,"unit":null,"unit_price":null,"discount_percent":null,"discount_amount":null,"tax_percent":null,"tax_amount":null,"total":null}],"subtotal":null,"discount_total":null,"discount_percent":null,"tax_rate":null,"tax_amount":null,"tax_type":null,"shipping":null,"handling":null,"other_charges":null,"total_amount":null,"amount_paid":null,"amount_due":null,"deposit":null,"currency":null,"exchange_rate":null,"notes":null,"terms_and_conditions":null,"confidence":"HIGH"}
   expected_output: >

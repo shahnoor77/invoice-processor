@@ -16,7 +16,7 @@ from datetime import datetime
 from threading import Thread, Lock
 from typing import Optional, Any
 from pydantic import BaseModel, field_validator, model_validator
-
+from password_encryption import decrypt_password
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "src"))
 from dotenv import load_dotenv
 load_dotenv(override=True)
@@ -542,7 +542,7 @@ def _redownload_attachment(job, db) -> bool:
         else:
             mail = imaplib.IMAP4(cfg.imap_host, cfg.imap_port)
 
-        mail.login(cfg.username, cfg.password)
+        mail.login(cfg.username, decrypt_password(cfg.password))
         mail.select(cfg.folder or "INBOX")
 
         # Search by message ID

@@ -20,6 +20,7 @@ from fastapi.responses import FileResponse
 from jose import JWTError, jwt
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
+from password_encryption import encrypt_password, decrypt_password
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "src"))
 from dotenv import load_dotenv
@@ -294,7 +295,10 @@ def get_email_config(user: User = Depends(get_current_user), db: Session = Depen
     cfg = db.query(EmailConfig).filter(EmailConfig.user_id == user.id).first()
     if not cfg:
         return None
-    return {k: v for k, v in cfg.__dict__.items() if not k.startswith("_")}
+    payload = {k: v for k, v in cfg.__dict__.items() if not k.startswith("_")}
+    # Never return stored credential material to clients.
+    payload["password"] = None
+    return payload
 
 
 @router.put("/settings/email", tags=["Settings"])
@@ -310,9 +314,16 @@ def save_email_config(data: EmailConfigIn, user: User = Depends(get_current_user
                 resolved.pop("password", None)
             for k, v in resolved.items():
                 if hasattr(cfg, k):
-                    setattr(cfg, k, v)
+                    if k == "password":
+                        # Encrypt only when a new password is explicitly provided.
+                        if v and v != cfg.password:
+                            setattr(cfg, k, encrypt_password(v))
+                    else:
+                        setattr(cfg, k, v)
         else:
-            cfg = EmailConfig(user_id=user.id, **{k: v for k, v in resolved.items() if hasattr(EmailConfig, k)})
+            if not resolved.get("password"):
+                raise HTTPException(status_code=400, detail="Password is required for new email config")
+            cfg = EmailConfig(user_id=user.id, **{k: (encrypt_password(v) if k == "password" else v) for k, v in resolved.items() if hasattr(EmailConfig, k)})
             db.add(cfg)
         db.commit()
         return {"message": "Email config saved", "imap_host": cfg.imap_host, "imap_port": cfg.imap_port}
@@ -345,7 +356,7 @@ def test_email_connection(user: User = Depends(get_current_user), db: Session = 
             mail = imaplib.IMAP4(cfg.imap_host, cfg.imap_port)
             if cfg.imap_encryption == "STARTTLS":
                 mail.starttls()
-        mail.login(cfg.username, cfg.password)
+        mail.login(cfg.username, decrypt_password(cfg.password))
         status, _ = mail.select(cfg.folder or "INBOX")
         mail.logout()
         if status == "OK":

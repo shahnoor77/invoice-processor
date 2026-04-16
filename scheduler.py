@@ -23,7 +23,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 from email.header import decode_header
 from threading import Thread
-
+from password_encryption import decrypt_password
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "src"))
 from dotenv import load_dotenv
 load_dotenv(override=True)
@@ -105,7 +105,7 @@ def _connect_imap(config: EmailConfig) -> imaplib.IMAP4:
         mail = imaplib.IMAP4(config.imap_host, config.imap_port)
         if config.imap_encryption == "STARTTLS":
             mail.starttls()
-    mail.login(config.username, config.password)
+    mail.login(config.username, decrypt_password(config.password))
     return mail
 
 
