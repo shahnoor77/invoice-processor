@@ -99,13 +99,14 @@ def _is_invoice_filename(filename: str) -> bool:
 
 def _connect_imap(config: EmailConfig) -> imaplib.IMAP4:
     """Open and authenticate an IMAP connection."""
+    from password_encryption import decrypt_password
     if config.imap_encryption in ("SSL/TLS", "SSL"):
         mail = imaplib.IMAP4_SSL(config.imap_host, config.imap_port)
     else:
         mail = imaplib.IMAP4(config.imap_host, config.imap_port)
         if config.imap_encryption == "STARTTLS":
             mail.starttls()
-    mail.login(config.username, config.password)
+    mail.login(config.username, decrypt_password(config.password))
     return mail
 
 

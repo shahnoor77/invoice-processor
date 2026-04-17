@@ -177,6 +177,7 @@ export default function InvoicesPage() {
                   { key: 'due_date', label: 'Due Date' },
                   { key: 'total_amount', label: 'Amount' },
                   { key: 'approval_status', label: 'Status' },
+                  { key: 'created_at', label: 'Processed' },
                 ].map(col => (
                   <th key={col.key} onClick={() => handleSort(col.key)}
                     className="px-3 py-2.5 text-left font-medium cursor-pointer hover:text-foreground transition-colors select-none text-[11px]">
@@ -199,6 +200,9 @@ export default function InvoicesPage() {
                     {inv.total_amount != null ? `${inv.currency || ''} ${inv.total_amount.toFixed(2)}` : '—'}
                   </td>
                   <td className="px-3 py-2.5"><StatusBadge status={mapStatus(inv.approval_status)} /></td>
+                  <td className="px-3 py-2.5 text-muted-foreground text-[11px]">
+                    {inv.created_at ? new Date(inv.created_at).toLocaleString(undefined, { dateStyle: 'short', timeStyle: 'short' }) : '—'}
+                  </td>
                   <td className="px-3 py-2.5">
                     <div className="flex items-center gap-1">
                       <button onClick={() => navigate(`/invoices/${inv.id}`)}

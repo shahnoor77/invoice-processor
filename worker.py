@@ -46,31 +46,117 @@ _ocr_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="ocr")
 def _parse_json(text: str):
     if not text:
         return None
-    # Direct parse
-    try:
-        return json.loads(text.strip())
-    except Exception:
-        pass
-    # Fenced code block: ```json ... ```
-    for pat in [r"```(?:json)?\s*(\{.*?\})\s*```", r"(\{[\s\S]*\})"]:
-        m = re.search(pat, text, re.DOTALL)
-        if m:
-            try:
-                return json.loads(m.group(1))
-            except Exception:
-                pass
-    # Qwen/thinking models wrap output in <think>...</think> — strip it first
+
+    def try_parse(s: str):
+        s = s.strip()
+        # Fix invalid JSON numbers: 00.00 → 0.00, 00 → 0 (JSON doesn't allow leading zeros)
+        s = re.sub(r'\b0{2,}(\.\d+)', r'0\1', s)   # 00.00 → 0.00
+        s = re.sub(r':\s*0{2,}([^.])', r': 0\1', s) # : 00, → : 0,
+        try:
+            return json.loads(s)
+        except Exception:
+            return None
+
+    # 1. Direct parse
+    result = try_parse(text)
+    if result:
+        return result
+
+    # 2. Strip <think>...</think> blocks (qwen3 reasoning)
     cleaned = re.sub(r"<think>[\s\S]*?</think>", "", text, flags=re.IGNORECASE).strip()
     if cleaned != text:
-        try:
-            return json.loads(cleaned)
-        except Exception:
-            m = re.search(r"(\{[\s\S]*\})", cleaned, re.DOTALL)
-            if m:
-                try:
-                    return json.loads(m.group(1))
-                except Exception:
-                    pass
+        result = try_parse(cleaned)
+        if result:
+            return result
+        text = cleaned  # use cleaned for further attempts
+
+    # 3. Extract from fenced code block
+    m = re.search(r"```(?:json)?\s*(\{[\s\S]*?\})\s*```", text, re.DOTALL)
+    if m:
+        result = try_parse(m.group(1))
+        if result:
+            return result
+
+    # 4. Find the JSON object in the text
+    start = text.find('{')
+    if start == -1:
+        return None
+    fragment = text[start:]
+
+    # 5. Try the full fragment
+    result = try_parse(fragment)
+    if result:
+        return result
+
+    # 6. Truncated JSON repair — walk char by char tracking depth
+    # Build the longest valid JSON by closing open structures
+    depth = 0
+    in_string = False
+    escape_next = False
+    last_complete_pos = -1
+
+    for i, ch in enumerate(fragment):
+        if escape_next:
+            escape_next = False
+            continue
+        if ch == '\\' and in_string:
+            escape_next = True
+            continue
+        if ch == '"':
+            in_string = not in_string
+            continue
+        if in_string:
+            continue
+        if ch == '{' or ch == '[':
+            depth += 1
+        elif ch == '}' or ch == ']':
+            depth -= 1
+            if depth == 0:
+                last_complete_pos = i
+
+    if last_complete_pos > 0:
+        result = try_parse(fragment[:last_complete_pos + 1])
+        if result:
+            return result
+
+    # 7. Truncated — try to close open braces/brackets
+    if depth > 0:
+        # Strip trailing incomplete tokens (partial strings, trailing commas)
+        repaired = re.sub(r',\s*$', '', fragment.rstrip())
+        # Close any open string
+        if in_string:
+            repaired += '"'
+        # Close open structures
+        close_stack = []
+        d2 = 0
+        in_s2 = False
+        esc2 = False
+        for ch in repaired:
+            if esc2:
+                esc2 = False
+                continue
+            if ch == '\\' and in_s2:
+                esc2 = True
+                continue
+            if ch == '"':
+                in_s2 = not in_s2
+                continue
+            if in_s2:
+                continue
+            if ch == '{':
+                close_stack.append('}')
+            elif ch == '[':
+                close_stack.append(']')
+            elif ch in ('}', ']'):
+                if close_stack:
+                    close_stack.pop()
+
+        repaired += ''.join(reversed(close_stack))
+        result = try_parse(repaired)
+        if result:
+            log.info("[Parse] Recovered truncated JSON via brace repair")
+            return result
+
     return None
 
 
@@ -542,7 +628,8 @@ def _redownload_attachment(job, db) -> bool:
         else:
             mail = imaplib.IMAP4(cfg.imap_host, cfg.imap_port)
 
-        mail.login(cfg.username, cfg.password)
+        from password_encryption import decrypt_password
+        mail.login(cfg.username, decrypt_password(cfg.password))
         mail.select(cfg.folder or "INBOX")
 
         # Search by message ID
@@ -611,15 +698,16 @@ def _extract_ocr(file_path: str) -> str:
         log.info(f"[OCR] PDF extraction done — {len(result)} chars")
         return result
 
-    # Try LLaVA vision model first, fall back to Tesseract
+    # For images: try LLaVA first (much better than Tesseract for invoices)
     log.info(f"[OCR] Trying LLaVA vision model at {ollama_url}")
     result = extract_image_with_llava(file_path, ollama_url)
-    if result.startswith("Error"):
-        log.warning(f"[OCR] LLaVA failed ({result[:100]}), falling back to Tesseract")
-        result = ImageTextExtractor()._run(file_path)
-        log.info(f"[OCR] Tesseract extraction done — {len(result)} chars")
-    else:
+    if not result.startswith("Error"):
         log.info(f"[OCR] LLaVA extraction done — {len(result)} chars")
+        return result
+
+    log.warning(f"[OCR] LLaVA failed ({result[:100]}), falling back to Tesseract")
+    result = ImageTextExtractor()._run(file_path)
+    log.info(f"[OCR] Tesseract extraction done — {len(result)} chars")
     return result
 
 
@@ -696,42 +784,70 @@ def _run_crew(ocr_text: str, file_path: str, user_id: str = None) -> dict | None
         log.error(f"[Crew] Crew kickoff failed with model {model_cfg.describe()}: {e}")
         raise
 
+    # Best source: step callback captured the full JSON before CrewAI truncated .raw
+    if crew_instance._captured_extraction:
+        log.info(f"[Crew] ✓ Using step-callback captured JSON — keys: {list(crew_instance._captured_extraction.keys())[:6]}")
+        return crew_instance._captured_extraction
+
     tasks_output = result.tasks_output or []
     log.info(f"[Crew] Crew finished — {len(tasks_output)} task outputs")
 
+    real_keys = {"invoice_number", "sender", "receiver", "line_items", "total_amount", "subtotal"}
+    refusal_keys = {"status", "message", "error", "result"}
+
+    def is_valid_invoice(d: dict) -> bool:
+        return bool(real_keys & set(d.keys()))
+
+    def is_refusal(d: dict) -> bool:
+        return not is_valid_invoice(d) and bool(refusal_keys & set(d.keys()))
+
     # Task order: [0] intake, [1] extraction, [2] validation
-    # Try index 1 (structured_data_extraction) first — most reliable
+    # Check task[1] first — json_dict is pre-parsed by CrewAI (works with GPT-4o, Claude etc.)
     if len(tasks_output) > 1:
-        parsed = _parse_json(tasks_output[1].raw)
+        task1 = tasks_output[1]
+
+        # json_dict: CrewAI auto-parses valid JSON responses into this — most reliable
+        if task1.json_dict and isinstance(task1.json_dict, dict) and is_valid_invoice(task1.json_dict):
+            log.info(f"[Crew] ✓ Got invoice JSON from task[1].json_dict — keys: {list(task1.json_dict.keys())[:6]}")
+            return task1.json_dict
+
+        # raw: fallback for models that wrap JSON in text or truncate
+        raw1 = task1.raw
+        parsed = _parse_json(raw1)
+        if parsed is None:
+            log.warning(f"[Crew] task[1] _parse_json returned None — raw length={len(raw1)}, preview: {raw1[:200]!r}")
         if parsed and isinstance(parsed, dict):
-            # Reject model refusal responses — real invoice JSON has invoice fields, not status/message
-            refusal_keys = {"status", "message", "error", "result"}
-            real_keys = {"invoice_number", "sender", "receiver", "line_items", "total_amount", "subtotal"}
-            has_real = bool(real_keys & set(parsed.keys()))
-            is_refusal = not has_real and bool(refusal_keys & set(parsed.keys()))
-            if is_refusal:
-                log.warning(f"[Crew] task[1] returned a refusal/status response: {parsed} — trying fallback")
-            else:
-                log.info(f"[Crew] ✓ Parsed invoice JSON from task[1] — keys: {list(parsed.keys())[:6]}")
+            if is_refusal(parsed):
+                log.warning(f"[Crew] task[1] returned a refusal: {list(parsed.keys())} — trying fallback")
+            elif is_valid_invoice(parsed):
+                log.info(f"[Crew] ✓ Parsed invoice JSON from task[1].raw — keys: {list(parsed.keys())[:6]}")
                 return parsed
 
-    # Fallback: scan all task outputs for valid invoice JSON
+    # Fallback: scan all task outputs
     for i, task_out in enumerate(tasks_output):
+        if task_out.json_dict and isinstance(task_out.json_dict, dict) and is_valid_invoice(task_out.json_dict):
+            log.info(f"[Crew] ✓ Got invoice JSON from task[{i}].json_dict fallback")
+            return task_out.json_dict
         parsed = _parse_json(task_out.raw)
-        if parsed and isinstance(parsed, dict) and ("invoice_number" in parsed or "sender" in parsed or "line_items" in parsed):
-            log.info(f"[Crew] ✓ Parsed invoice JSON from task[{i}] fallback")
+        if parsed and isinstance(parsed, dict) and is_valid_invoice(parsed):
+            log.info(f"[Crew] ✓ Parsed invoice JSON from task[{i}].raw fallback")
             return parsed
 
-    # Last resort: try the final crew result
+    # Last resort: crew result object
+    if hasattr(result, 'json_dict') and result.json_dict and isinstance(result.json_dict, dict) and is_valid_invoice(result.json_dict):
+        log.info("[Crew] ✓ Got invoice JSON from result.json_dict")
+        return result.json_dict
+
     parsed = _parse_json(str(result.raw))
-    if parsed and isinstance(parsed, dict):
+    if parsed and isinstance(parsed, dict) and is_valid_invoice(parsed):
         log.info("[Crew] ✓ Parsed invoice JSON from result.raw fallback")
         return parsed
 
     log.error(f"[Crew] ✗ Could not extract invoice JSON from any task output (count={len(tasks_output)})")
     for i, t in enumerate(tasks_output):
-        log.error(f"[Crew]   task[{i}] raw preview (first 500): {t.raw[:500]!r}")
+        log.error(f"[Crew]   task[{i}] json_dict={bool(t.json_dict)} raw preview (first 300): {t.raw[:300]!r}")
     return None
+
 
 
 def _with_retry(fn, max_attempts: int = 3, delay: float = 2.0, label: str = ""):
@@ -850,13 +966,15 @@ def save_invoice_to_db(db, user_id: str, extracted: dict, file_name: str, source
 
     # Save line items
     for item in (extracted.get("line_items") or []):
+        # discount_amount takes priority; fall back to discount_percent as a raw value
+        discount_val = _safe_float(item.get("discount_amount")) or _safe_float(item.get("discount_percent"))
         li = InvoiceLineItem(
             invoice_id=invoice.id,
             description=item.get("description"),
             quantity=_safe_float(item.get("quantity")),
             unit=item.get("unit"),
             unit_price=_safe_float(item.get("unit_price")),
-            discount=_safe_float(item.get("discount")),
+            discount=discount_val,
             total=_safe_float(item.get("total")),
         )
         db.add(li)
@@ -947,11 +1065,11 @@ def process_job(job: ProcessingJob, db) -> bool:
             job.retry_count = (job.retry_count or 0) + 1
             if job.retry_count < MAX_JOB_RETRIES:
                 job.status = "queued"
-                job.error_message = f"Attempt {job.retry_count} failed: {type(e).__name__}: {str(e)[:250]}"
+                job.error_message = f"Attempt {job.retry_count} failed: {type(e).__name__}: {str(e)[:500]}"
                 log.info(f"[Job {job.id[:8]}] Requeued for retry ({job.retry_count}/{MAX_JOB_RETRIES})")
             else:
                 job.status = "failed"
-                job.error_message = f"Permanently failed after {MAX_JOB_RETRIES} attempts. Last: {type(e).__name__}: {str(e)[:250]}"
+                job.error_message = f"Permanently failed after {MAX_JOB_RETRIES} attempts. Last: {type(e).__name__}: {str(e)[:500]}"
                 log.error(f"[Job {job.id[:8]}] Permanently failed after {MAX_JOB_RETRIES} attempts")
             job.completed_at = datetime.utcnow()
             db.commit()

@@ -28,6 +28,7 @@ load_dotenv(override=True)
 from database import get_db, init_db
 from models import EmailConfig, Invoice, InvoiceLineItem, ProcessingJob, User, Webhook, UserModelConfig
 from destinations import route_approved_invoice
+from password_encryption import encrypt_password, decrypt_password
 from invoice_processing_automation_system.tools.custom_tool import (
     PDFTextExtractor, ImageTextExtractor, extract_image_with_llava
 )
@@ -294,7 +295,9 @@ def get_email_config(user: User = Depends(get_current_user), db: Session = Depen
     cfg = db.query(EmailConfig).filter(EmailConfig.user_id == user.id).first()
     if not cfg:
         return None
-    return {k: v for k, v in cfg.__dict__.items() if not k.startswith("_")}
+    payload = {k: v for k, v in cfg.__dict__.items() if not k.startswith("_")}
+    payload["password"] = None  # never return stored credential to client
+    return payload
 
 
 @router.put("/settings/email", tags=["Settings"])
@@ -310,8 +313,14 @@ def save_email_config(data: EmailConfigIn, user: User = Depends(get_current_user
                 resolved.pop("password", None)
             for k, v in resolved.items():
                 if hasattr(cfg, k):
-                    setattr(cfg, k, v)
+                    if k == "password" and v and v != cfg.password:
+                        setattr(cfg, k, encrypt_password(v))
+                    else:
+                        setattr(cfg, k, v)
         else:
+            if not resolved.get("password"):
+                raise HTTPException(status_code=400, detail="Password is required for new email config")
+            resolved["password"] = encrypt_password(resolved["password"])
             cfg = EmailConfig(user_id=user.id, **{k: v for k, v in resolved.items() if hasattr(EmailConfig, k)})
             db.add(cfg)
         db.commit()
@@ -345,7 +354,7 @@ def test_email_connection(user: User = Depends(get_current_user), db: Session = 
             mail = imaplib.IMAP4(cfg.imap_host, cfg.imap_port)
             if cfg.imap_encryption == "STARTTLS":
                 mail.starttls()
-        mail.login(cfg.username, cfg.password)
+        mail.login(cfg.username, decrypt_password(cfg.password))
         status, _ = mail.select(cfg.folder or "INBOX")
         mail.logout()
         if status == "OK":

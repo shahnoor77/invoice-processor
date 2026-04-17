@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import { motion } from 'framer-motion';
 import { Loader2, RotateCcw, CheckCircle, Info, Server, Plus, Trash2, Zap } from 'lucide-react';
 import { toast } from 'sonner';
-import { apiGetModelConfig, apiSaveModelConfig, apiResetModelConfig } from '@/lib/api';
+import { apiGetModelConfig, apiSaveModelConfig, apiResetModelConfig, apiActivateModelConfig, apiDeleteModelConfig } from '@/lib/api';
 
 const PRESET_MODELS = [
   { label: 'System Default (from server config)', value: '', needsKey: false, needsUrl: false },
@@ -89,10 +89,7 @@ export function ModelConfigForm({ onBack, onComplete }: Props) {
   const handleActivate = async (id: string) => {
     setActivating(id);
     try {
-      await fetch(`/api/settings/model/${id}/activate`, {
-        method: 'PATCH',
-        headers: { Authorization: `Bearer ${localStorage.getItem('token')}` },
-      });
+      await apiActivateModelConfig(id);
       toast.success('Model activated');
       load();
     } catch (e: any) { toast.error(e.message); }
@@ -102,10 +99,7 @@ export function ModelConfigForm({ onBack, onComplete }: Props) {
   const handleDelete = async (id: string) => {
     setDeleting(id);
     try {
-      await fetch(`/api/settings/model/${id}`, {
-        method: 'DELETE',
-        headers: { Authorization: `Bearer ${localStorage.getItem('token')}` },
-      });
+      await apiDeleteModelConfig(id);
       toast.success('Model config deleted');
       load();
     } catch (e: any) { toast.error(e.message); }

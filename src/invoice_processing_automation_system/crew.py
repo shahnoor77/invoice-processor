@@ -80,7 +80,7 @@ def make_llm(temperature: float = 0.1, cfg: Optional[ModelConfig] = None) -> LLM
         temperature=temperature,
         timeout=300,
         max_retries=3,
-        max_tokens=4096,
+        max_tokens=8192,
         **extra_kwargs,
     )
     _llm_cache[key] = llm
@@ -93,19 +93,57 @@ class InvoiceProcessingAutomationSystemCrew:
 
     _task_callback: Optional[Callable] = None
     _model_cfg: Optional[ModelConfig] = None
+    _captured_extraction: Optional[dict] = None  # captures full JSON before CrewAI truncates .raw
 
     def set_task_callback(self, callback: Callable) -> "InvoiceProcessingAutomationSystemCrew":
         self._task_callback = callback
         return self
 
     def set_model_config(self, cfg: ModelConfig) -> "InvoiceProcessingAutomationSystemCrew":
-        """Inject per-user model config — call before crew_minimal()."""
         self._model_cfg = cfg
         log.info(f"[Crew] Model config set → {cfg.describe()}")
         return self
 
     def _llm(self, temperature: float = 0.1) -> LLM:
         return make_llm(temperature=temperature, cfg=self._model_cfg)
+
+    def _step_callback(self, step_output) -> None:
+        """Capture the extraction agent's full JSON output before CrewAI truncates .raw."""
+        try:
+            # step_output can be AgentFinish, AgentAction, or a string
+            text = None
+            if hasattr(step_output, 'output'):
+                text = str(step_output.output)
+            elif hasattr(step_output, 'return_values'):
+                text = str(step_output.return_values.get('output', ''))
+            elif isinstance(step_output, str):
+                text = step_output
+
+            if text:
+                # Try to find invoice JSON in the output
+                import json as _json, re as _re
+                # Look for JSON object
+                start = text.find('{')
+                if start != -1:
+                    fragment = text[start:]
+                    try:
+                        parsed = _json.loads(fragment)
+                    except Exception:
+                        # Try regex extraction
+                        m = _re.search(r'(\{[\s\S]*\})', fragment, _re.DOTALL)
+                        parsed = None
+                        if m:
+                            try:
+                                parsed = _json.loads(m.group(1))
+                            except Exception:
+                                pass
+                    if parsed and isinstance(parsed, dict):
+                        real_keys = {"invoice_number", "sender", "receiver", "line_items"}
+                        if real_keys.intersection(parsed.keys()):
+                            self._captured_extraction = parsed
+                            log.info(f"[Crew] Step callback captured invoice JSON — keys: {list(parsed.keys())[:6]}")
+        except Exception as e:
+            log.debug(f"[Crew] Step callback error (non-fatal): {e}")
 
     @agent
     def document_intake_specialist(self) -> Agent:
@@ -237,4 +275,5 @@ class InvoiceProcessingAutomationSystemCrew:
             llm=llm,
             chat_llm=llm,
             task_callback=self._task_callback,
+            step_callback=self._step_callback,
         )
