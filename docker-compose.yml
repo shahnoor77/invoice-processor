@@ -22,12 +22,12 @@ services:
   # ── InvoiceIQ API + Frontend ──────────────────────────────────────────────────
   api:
     image: shahnoor77/invoiceiq:latest
+    container_name: invoiceiq-api   # fixed name so Watchtower can find it
     restart: unless-stopped
     ports:
       - "85:80"
     env_file: .env
     environment:
-      # Override to use internal docker network hostname
       - DATABASE_URL=postgresql://postgres:${DB_PASSWORD:-postgres}@db:5432/invoice_db
     volumes:
       - ./google_credentials.json:/app/google_credentials.json:ro
@@ -45,13 +45,11 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
     environment:
-      - WATCHTOWER_POLL_INTERVAL=300        # check every 5 minutes
-      - WATCHTOWER_CLEANUP=true             # remove old images after update
-      - WATCHTOWER_INCLUDE_STOPPED=false    # only watch running containers
-      - WATCHTOWER_LABEL_ENABLE=false       # watch all containers
-      - WATCHTOWER_NOTIFICATIONS=shoutrrr   # optional — remove if not using notifications
-      - WATCHTOWER_NOTIFICATION_URL=${WATCHTOWER_NOTIFICATION_URL:-}  # e.g. slack://token@channel
-    command: api  # only watch the api container, not db or watchtower itself
+      - WATCHTOWER_POLL_INTERVAL=300   # check every 5 minutes
+      - WATCHTOWER_CLEANUP=true        # remove old images after update
+      - WATCHTOWER_INCLUDE_STOPPED=false
+      - WATCHTOWER_NOTIFICATION_URL=${WATCHTOWER_NOTIFICATION_URL:-}
+    command: invoiceiq-api             
 
 volumes:
   postgres_data:
