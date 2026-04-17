@@ -14,6 +14,102 @@ function mapStatus(s: string): 'Pending' | 'Approved' | 'Rejected' {
 
 type ValidationIssue = { field: string; original: number; corrected: number; note: string };
 
+type EditField =
+  | 'invoice_number'
+  | 'invoice_date'
+  | 'due_date'
+  | 'payment_terms'
+  | 'currency'
+  | 'sender_name'
+  | 'sender_email'
+  | 'sender_phone'
+  | 'sender_address'
+  | 'receiver_name'
+  | 'receiver_email'
+  | 'subtotal'
+  | 'tax_rate'
+  | 'tax_amount'
+  | 'discount_total'
+  | 'shipping'
+  | 'total_amount'
+  | 'amount_due'
+  | 'notes';
+
+type EditErrorMap = Partial<Record<EditField, string>>;
+type EditData = Partial<Record<EditField, string | number>>;
+
+const NUMERIC_EDIT_FIELDS: EditField[] = ['subtotal', 'tax_rate', 'tax_amount', 'discount_total', 'shipping', 'total_amount', 'amount_due'];
+
+const isValidDateValue = (value: string): boolean => {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const [year, month, day] = value.split('-').map(Number);
+  const parsed = new Date(Date.UTC(year, month - 1, day));
+  return parsed.getUTCFullYear() === year && parsed.getUTCMonth() + 1 === month && parsed.getUTCDate() === day;
+};
+
+const normalizeDateValue = (value: string | null | undefined): string => {
+  if (!value) return '';
+  return value.includes('T') ? value.split('T')[0] : value;
+};
+
+function validateEditData(data: Record<string, unknown>): EditErrorMap {
+  const errors: EditErrorMap = {};
+  const getTrimmed = (key: EditField) => String(data[key] ?? '').trim();
+
+  const invoiceDate = getTrimmed('invoice_date');
+  const dueDate = getTrimmed('due_date');
+  if (invoiceDate && !isValidDateValue(invoiceDate)) errors.invoice_date = 'Use a valid date.';
+  if (dueDate && !isValidDateValue(dueDate)) errors.due_date = 'Use a valid date.';
+  if (invoiceDate && dueDate && !errors.invoice_date && !errors.due_date && dueDate < invoiceDate) {
+    errors.due_date = 'Due date cannot be before invoice date.';
+  }
+
+  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  const senderEmail = getTrimmed('sender_email');
+  const receiverEmail = getTrimmed('receiver_email');
+  if (senderEmail && !emailRegex.test(senderEmail)) errors.sender_email = 'Enter a valid email address.';
+  if (receiverEmail && !emailRegex.test(receiverEmail)) errors.receiver_email = 'Enter a valid email address.';
+
+  const currency = getTrimmed('currency');
+  if (currency && !/^[A-Za-z]{3}$/.test(currency)) {
+    errors.currency = 'Use a 3-letter currency code (e.g., USD).';
+  }
+
+  const senderPhone = getTrimmed('sender_phone');
+  if (senderPhone && !/^[+0-9()\-\s.]{7,20}$/.test(senderPhone)) {
+    errors.sender_phone = 'Enter a valid phone number.';
+  }
+
+  for (const field of NUMERIC_EDIT_FIELDS) {
+    const rawValue = data[field];
+    if (rawValue === '' || rawValue == null) continue;
+    const num = Number(rawValue);
+    if (!Number.isFinite(num)) {
+      errors[field] = 'Enter a valid number.';
+      continue;
+    }
+    if (num < 0) {
+      errors[field] = 'Value cannot be negative.';
+      continue;
+    }
+    if (field === 'tax_rate' && num > 100) {
+      errors.tax_rate = 'Tax rate must be between 0 and 100.';
+    }
+  }
+
+  const notes = getTrimmed('notes');
+  if (notes.length > 1000) {
+    errors.notes = 'Notes cannot exceed 1000 characters.';
+  }
+
+  return errors;
+}
+
+const getErrorMessage = (error: unknown): string => {
+  if (error instanceof Error && error.message) return error.message;
+  return 'Something went wrong.';
+};
+
 /** Renders a value cell. If the field was auto-corrected, shows the wrong value struck-through in amber, then the correct value. */
 function ValCell({ field, value, currency = '', issueMap }: {
   field: string;
@@ -44,7 +140,8 @@ export default function InvoiceDetailPage() {
   const [actionLoading, setActionLoading] = useState(false);
   const [rejectionReason, setRejectionReason] = useState('');
   const [editing, setEditing] = useState(false);
-  const [editData, setEditData] = useState<Record<string, any>>({});
+  const [editData, setEditData] = useState<EditData>({});
+  const [editErrors, setEditErrors] = useState<EditErrorMap>({});
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
@@ -59,8 +156,8 @@ export default function InvoiceDetailPage() {
       await apiApproveInvoice(invoice.id);
       setInvoice({ ...invoice, approval_status: 'APPROVED' });
       toast.success(`Invoice ${invoice.invoice_number || invoice.id} approved`);
-    } catch (e: any) {
-      toast.error(e.message);
+    } catch (e: unknown) {
+      toast.error(getErrorMessage(e));
     } finally {
       setActionLoading(false);
       setAction(null);
@@ -74,8 +171,8 @@ export default function InvoiceDetailPage() {
       await apiRejectInvoice(invoice.id, rejectionReason);
       setInvoice({ ...invoice, approval_status: 'REJECTED', rejected_reason: rejectionReason });
       toast.success(`Invoice ${invoice.invoice_number || invoice.id} rejected`);
-    } catch (e: any) {
-      toast.error(e.message);
+    } catch (e: unknown) {
+      toast.error(getErrorMessage(e));
     } finally {
       setActionLoading(false);
       setAction(null);
@@ -86,8 +183,8 @@ export default function InvoiceDetailPage() {
     if (!invoice) return;
     setEditData({
       invoice_number: invoice.invoice_number || '',
-      invoice_date: invoice.invoice_date || '',
-      due_date: invoice.due_date || '',
+      invoice_date: normalizeDateValue(invoice.invoice_date),
+      due_date: normalizeDateValue(invoice.due_date),
       payment_terms: invoice.payment_terms || '',
       currency: invoice.currency || '',
       sender_name: invoice.sender_name || '',
@@ -105,29 +202,50 @@ export default function InvoiceDetailPage() {
       amount_due: invoice.amount_due ?? '',
       notes: invoice.notes || '',
     });
+    setEditErrors({});
     setEditing(true);
+  };
+
+  const handleEditChange = (field: EditField, value: string) => {
+    const nextValue = field === 'currency' ? value.toUpperCase() : value;
+    setEditData((prev: EditData) => {
+      const nextData = { ...prev, [field]: nextValue };
+      setEditErrors(validateEditData(nextData));
+      return nextData;
+    });
   };
 
   const handleSaveEdit = async () => {
     if (!invoice) return;
+    const currentErrors = validateEditData(editData);
+    if (Object.keys(currentErrors).length > 0) {
+      setEditErrors(currentErrors);
+      toast.error('Please fix validation errors before saving.');
+      return;
+    }
+
     setSaving(true);
     try {
       // Only send changed non-empty fields
-      const payload: Record<string, any> = {};
+      const payload: Record<string, unknown> = {};
       for (const [k, v] of Object.entries(editData)) {
-        if (v !== '' && v !== null && v !== undefined) {
-          payload[k] = typeof v === 'string' && !isNaN(Number(v)) && ['subtotal','tax_rate','tax_amount','discount_total','shipping','total_amount','amount_due'].includes(k)
-            ? Number(v) : v;
+        const trimmed = typeof v === 'string' ? v.trim() : v;
+        if (trimmed !== '' && trimmed !== null && trimmed !== undefined) {
+          payload[k] = typeof trimmed === 'string' && NUMERIC_EDIT_FIELDS.includes(k as EditField)
+            ? Number(trimmed)
+            : trimmed;
         }
       }
       const updated = await apiUpdateInvoice(invoice.id, payload);
       setInvoice(updated);
       setEditing(false);
+      setEditErrors({});
       toast.success('Invoice updated');
-    } catch (e: any) {
-      toast.error(e.message);
+    } catch (e: unknown) {
+      toast.error(getErrorMessage(e));
+    } finally {
+      setSaving(false);
     }
-    setSaving(false);
   };
 
   if (loading) {
@@ -153,7 +271,8 @@ export default function InvoiceDetailPage() {
   const cur = invoice.currency || '';
 
   // Validation issues map: field → issue
-  const validationIssues: ValidationIssue[] = (invoice.full_json as any)?.validation_issues ?? [];
+  const fullJson = invoice.full_json as { validation_issues?: ValidationIssue[] } | null;
+  const validationIssues: ValidationIssue[] = fullJson?.validation_issues ?? [];
   const issueMap: Record<string, ValidationIssue> = Object.fromEntries(validationIssues.map(i => [i.field, i]));
   const hasIssues = validationIssues.length > 0;
 
@@ -201,16 +320,23 @@ export default function InvoiceDetailPage() {
           </div>
           <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
             {[
-              { label: 'Invoice #', k: 'invoice_number' },
-              { label: 'Invoice Date', k: 'invoice_date' },
-              { label: 'Due Date', k: 'due_date' },
-              { label: 'Currency', k: 'currency' },
-              { label: 'Payment Terms', k: 'payment_terms' },
-            ].map(({ label, k }) => (
+              { label: 'Invoice #', k: 'invoice_number', type: 'text' },
+              { label: 'Invoice Date', k: 'invoice_date', type: 'date' },
+              { label: 'Due Date', k: 'due_date', type: 'date' },
+              { label: 'Currency', k: 'currency', type: 'text' },
+              { label: 'Payment Terms', k: 'payment_terms', type: 'text' },
+            ].map(({ label, k, type }) => (
               <div key={k}>
                 <label className="block text-[11px] text-muted-foreground mb-1">{label}</label>
-                <input className="w-full rounded-lg border border-border bg-background px-3 py-2 text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-primary"
-                  value={editData[k] ?? ''} onChange={e => setEditData((d: any) => ({ ...d, [k]: e.target.value }))} />
+                <input
+                  type={type}
+                  className={`w-full rounded-lg border bg-background px-3 py-2 text-xs text-foreground focus:outline-none focus:ring-1 ${editErrors[k as EditField] ? 'border-destructive focus:ring-destructive' : 'border-border focus:ring-primary'}`}
+                  value={String(editData[k] ?? '')}
+                  onChange={e => handleEditChange(k as EditField, e.target.value)}
+                />
+                {editErrors[k as EditField] && (
+                  <p className="mt-1 text-[10px] text-destructive">{editErrors[k as EditField]}</p>
+                )}
               </div>
             ))}
           </div>
@@ -225,8 +351,14 @@ export default function InvoiceDetailPage() {
             ].map(({ label, k }) => (
               <div key={k}>
                 <label className="block text-[11px] text-muted-foreground mb-1">{label}</label>
-                <input className="w-full rounded-lg border border-border bg-background px-3 py-2 text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-primary"
-                  value={editData[k] ?? ''} onChange={e => setEditData((d: any) => ({ ...d, [k]: e.target.value }))} />
+                <input
+                  className={`w-full rounded-lg border bg-background px-3 py-2 text-xs text-foreground focus:outline-none focus:ring-1 ${editErrors[k as EditField] ? 'border-destructive focus:ring-destructive' : 'border-border focus:ring-primary'}`}
+                  value={String(editData[k] ?? '')}
+                  onChange={e => handleEditChange(k as EditField, e.target.value)}
+                />
+                {editErrors[k as EditField] && (
+                  <p className="mt-1 text-[10px] text-destructive">{editErrors[k as EditField]}</p>
+                )}
               </div>
             ))}
           </div>
@@ -242,15 +374,27 @@ export default function InvoiceDetailPage() {
             ].map(({ label, k }) => (
               <div key={k}>
                 <label className="block text-[11px] text-muted-foreground mb-1">{label}</label>
-                <input type="number" className="w-full rounded-lg border border-border bg-background px-3 py-2 text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-primary"
-                  value={editData[k] ?? ''} onChange={e => setEditData((d: any) => ({ ...d, [k]: e.target.value }))} />
+                <input
+                  type="number"
+                  min="0"
+                  step="any"
+                  className={`w-full rounded-lg border bg-background px-3 py-2 text-xs text-foreground focus:outline-none focus:ring-1 ${editErrors[k as EditField] ? 'border-destructive focus:ring-destructive' : 'border-border focus:ring-primary'}`}
+                  value={String(editData[k] ?? '')}
+                  onChange={e => handleEditChange(k as EditField, e.target.value)}
+                />
+                {editErrors[k as EditField] && (
+                  <p className="mt-1 text-[10px] text-destructive">{editErrors[k as EditField]}</p>
+                )}
               </div>
             ))}
           </div>
           <div>
             <label className="block text-[11px] text-muted-foreground mb-1">Notes</label>
             <textarea className="w-full rounded-lg border border-border bg-background px-3 py-2 text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-primary"
-              rows={2} value={editData['notes'] ?? ''} onChange={e => setEditData((d: any) => ({ ...d, notes: e.target.value }))} />
+              rows={2} value={editData['notes'] ?? ''} onChange={e => handleEditChange('notes', e.target.value)} />
+            {editErrors.notes && (
+              <p className="mt-1 text-[10px] text-destructive">{editErrors.notes}</p>
+            )}
           </div>
           <div className="flex justify-end gap-2 pt-1">
             <button onClick={() => setEditing(false)} className="px-3 h-8 rounded-lg border border-border text-xs font-medium text-foreground hover:bg-muted transition-all">
