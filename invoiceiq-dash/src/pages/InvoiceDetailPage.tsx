@@ -199,48 +199,59 @@ export default function InvoiceDetailPage() {
             <p className="text-sm font-semibold text-foreground">Edit Invoice</p>
             <button onClick={() => setEditing(false)} className="text-muted-foreground hover:text-foreground"><X size={15} /></button>
           </div>
-          {(() => {
-            const inp = 'w-full rounded-lg border border-border bg-background px-3 py-2 text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-primary';
-            const lbl = 'block text-[11px] text-muted-foreground mb-1';
-            const F = ({ label, k }: { label: string; k: string }) => (
-              <div>
-                <label className={lbl}>{label}</label>
-                <input className={inp} value={editData[k] ?? ''} onChange={e => setEditData((d: any) => ({ ...d, [k]: e.target.value }))} />
+          <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+            {[
+              { label: 'Invoice #', k: 'invoice_number' },
+              { label: 'Invoice Date', k: 'invoice_date' },
+              { label: 'Due Date', k: 'due_date' },
+              { label: 'Currency', k: 'currency' },
+              { label: 'Payment Terms', k: 'payment_terms' },
+            ].map(({ label, k }) => (
+              <div key={k}>
+                <label className="block text-[11px] text-muted-foreground mb-1">{label}</label>
+                <input className="w-full rounded-lg border border-border bg-background px-3 py-2 text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-primary"
+                  value={editData[k] ?? ''} onChange={e => setEditData((d: any) => ({ ...d, [k]: e.target.value }))} />
               </div>
-            );
-            return (
-              <>
-                <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
-                  <F label="Invoice #" k="invoice_number" />
-                  <F label="Invoice Date" k="invoice_date" />
-                  <F label="Due Date" k="due_date" />
-                  <F label="Currency" k="currency" />
-                  <F label="Payment Terms" k="payment_terms" />
-                </div>
-                <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
-                  <F label="Vendor Name" k="sender_name" />
-                  <F label="Vendor Email" k="sender_email" />
-                  <F label="Vendor Phone" k="sender_phone" />
-                  <F label="Vendor Address" k="sender_address" />
-                  <F label="Client Name" k="receiver_name" />
-                  <F label="Client Email" k="receiver_email" />
-                </div>
-                <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-                  <F label="Subtotal" k="subtotal" />
-                  <F label="Tax Rate (%)" k="tax_rate" />
-                  <F label="Tax Amount" k="tax_amount" />
-                  <F label="Discount" k="discount_total" />
-                  <F label="Shipping" k="shipping" />
-                  <F label="Total Amount" k="total_amount" />
-                  <F label="Amount Due" k="amount_due" />
-                </div>
-                <div>
-                  <label className={lbl}>Notes</label>
-                  <textarea className={inp} rows={2} value={editData['notes'] ?? ''} onChange={e => setEditData((d: any) => ({ ...d, notes: e.target.value }))} />
-                </div>
-              </>
-            );
-          })()}
+            ))}
+          </div>
+          <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+            {[
+              { label: 'Vendor Name', k: 'sender_name' },
+              { label: 'Vendor Email', k: 'sender_email' },
+              { label: 'Vendor Phone', k: 'sender_phone' },
+              { label: 'Vendor Address', k: 'sender_address' },
+              { label: 'Client Name', k: 'receiver_name' },
+              { label: 'Client Email', k: 'receiver_email' },
+            ].map(({ label, k }) => (
+              <div key={k}>
+                <label className="block text-[11px] text-muted-foreground mb-1">{label}</label>
+                <input className="w-full rounded-lg border border-border bg-background px-3 py-2 text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-primary"
+                  value={editData[k] ?? ''} onChange={e => setEditData((d: any) => ({ ...d, [k]: e.target.value }))} />
+              </div>
+            ))}
+          </div>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+            {[
+              { label: 'Subtotal', k: 'subtotal' },
+              { label: 'Tax Rate (%)', k: 'tax_rate' },
+              { label: 'Tax Amount', k: 'tax_amount' },
+              { label: 'Discount', k: 'discount_total' },
+              { label: 'Shipping', k: 'shipping' },
+              { label: 'Total Amount', k: 'total_amount' },
+              { label: 'Amount Due', k: 'amount_due' },
+            ].map(({ label, k }) => (
+              <div key={k}>
+                <label className="block text-[11px] text-muted-foreground mb-1">{label}</label>
+                <input type="number" className="w-full rounded-lg border border-border bg-background px-3 py-2 text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-primary"
+                  value={editData[k] ?? ''} onChange={e => setEditData((d: any) => ({ ...d, [k]: e.target.value }))} />
+              </div>
+            ))}
+          </div>
+          <div>
+            <label className="block text-[11px] text-muted-foreground mb-1">Notes</label>
+            <textarea className="w-full rounded-lg border border-border bg-background px-3 py-2 text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-primary"
+              rows={2} value={editData['notes'] ?? ''} onChange={e => setEditData((d: any) => ({ ...d, notes: e.target.value }))} />
+          </div>
           <div className="flex justify-end gap-2 pt-1">
             <button onClick={() => setEditing(false)} className="px-3 h-8 rounded-lg border border-border text-xs font-medium text-foreground hover:bg-muted transition-all">
               Cancel
