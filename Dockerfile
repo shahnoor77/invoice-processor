@@ -32,7 +32,7 @@ RUN uv sync --frozen --no-dev
 
 # Copy backend source
 COPY api.py auth.py database.py models.py destinations.py \
-     scheduler.py worker.py jobs.py db_setup.py ./
+     scheduler.py worker.py jobs.py db_setup.py password_encryption.py ./
 COPY knowledge/ ./knowledge/
 COPY .env.example ./.env.example
 

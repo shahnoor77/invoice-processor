@@ -1,8 +1,8 @@
 import { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
-import { ArrowLeft, CheckCircle, XCircle, Loader2, MapPin, Phone, Hash, Clock, Receipt, Calendar, CreditCard, Mail } from 'lucide-react';
-import { apiGetInvoice, apiApproveInvoice, apiRejectInvoice, RealInvoice } from '@/lib/api';
+import { ArrowLeft, CheckCircle, XCircle, Loader2, MapPin, Phone, Hash, Clock, Receipt, Calendar, CreditCard, Mail, Edit2, Save, X } from 'lucide-react';
+import { apiGetInvoice, apiApproveInvoice, apiRejectInvoice, apiUpdateInvoice, RealInvoice } from '@/lib/api';
 import { StatusBadge } from '@/components/invoice/StatusBadge';
 import { toast } from 'sonner';
 
@@ -43,6 +43,9 @@ export default function InvoiceDetailPage() {
   const [action, setAction] = useState<'approve' | 'reject' | null>(null);
   const [actionLoading, setActionLoading] = useState(false);
   const [rejectionReason, setRejectionReason] = useState('');
+  const [editing, setEditing] = useState(false);
+  const [editData, setEditData] = useState<Record<string, any>>({});
+  const [saving, setSaving] = useState(false);
 
   useEffect(() => {
     if (!id) return;
@@ -77,6 +80,54 @@ export default function InvoiceDetailPage() {
       setActionLoading(false);
       setAction(null);
     }
+  };
+
+  const startEdit = () => {
+    if (!invoice) return;
+    setEditData({
+      invoice_number: invoice.invoice_number || '',
+      invoice_date: invoice.invoice_date || '',
+      due_date: invoice.due_date || '',
+      payment_terms: invoice.payment_terms || '',
+      currency: invoice.currency || '',
+      sender_name: invoice.sender_name || '',
+      sender_email: invoice.sender_email || '',
+      sender_phone: invoice.sender_phone || '',
+      sender_address: invoice.sender_address || '',
+      receiver_name: invoice.receiver_name || '',
+      receiver_email: invoice.receiver_email || '',
+      subtotal: invoice.subtotal ?? '',
+      tax_rate: invoice.tax_rate ?? '',
+      tax_amount: invoice.tax_amount ?? '',
+      discount_total: invoice.discount_total ?? '',
+      shipping: invoice.shipping ?? '',
+      total_amount: invoice.total_amount ?? '',
+      amount_due: invoice.amount_due ?? '',
+      notes: invoice.notes || '',
+    });
+    setEditing(true);
+  };
+
+  const handleSaveEdit = async () => {
+    if (!invoice) return;
+    setSaving(true);
+    try {
+      // Only send changed non-empty fields
+      const payload: Record<string, any> = {};
+      for (const [k, v] of Object.entries(editData)) {
+        if (v !== '' && v !== null && v !== undefined) {
+          payload[k] = typeof v === 'string' && !isNaN(Number(v)) && ['subtotal','tax_rate','tax_amount','discount_total','shipping','total_amount','amount_due'].includes(k)
+            ? Number(v) : v;
+        }
+      }
+      const updated = await apiUpdateInvoice(invoice.id, payload);
+      setInvoice(updated);
+      setEditing(false);
+      toast.success('Invoice updated');
+    } catch (e: any) {
+      toast.error(e.message);
+    }
+    setSaving(false);
   };
 
   if (loading) {
@@ -130,12 +181,77 @@ export default function InvoiceDetailPage() {
                 ⚠ {validationIssues.length} calc {validationIssues.length === 1 ? 'fix' : 'fixes'} applied
               </span>
             )}
-          </div>
-          <p className="text-xs text-muted-foreground mt-0.5">From {invoice.sender_name || invoice.file_name || '—'}</p>
+          </div>          <p className="text-xs text-muted-foreground mt-0.5">From {invoice.sender_name || invoice.file_name || '—'}</p>
         </div>
+        <button onClick={startEdit}
+          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-border text-xs font-medium text-foreground hover:bg-muted transition-all flex-shrink-0">
+          <Edit2 size={12} /> Edit
+        </button>
       </div>
 
       <div className={`h-1 ${statusColors[status]} rounded-full mb-5`} />
+
+      {/* Edit panel */}
+      {editing && (
+        <motion.div initial={{ opacity: 0, y: -8 }} animate={{ opacity: 1, y: 0 }}
+          className="border border-primary/30 rounded-xl p-5 bg-primary/5 mb-5 space-y-4">
+          <div className="flex items-center justify-between">
+            <p className="text-sm font-semibold text-foreground">Edit Invoice</p>
+            <button onClick={() => setEditing(false)} className="text-muted-foreground hover:text-foreground"><X size={15} /></button>
+          </div>
+          {(() => {
+            const inp = 'w-full rounded-lg border border-border bg-background px-3 py-2 text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-primary';
+            const lbl = 'block text-[11px] text-muted-foreground mb-1';
+            const F = ({ label, k }: { label: string; k: string }) => (
+              <div>
+                <label className={lbl}>{label}</label>
+                <input className={inp} value={editData[k] ?? ''} onChange={e => setEditData((d: any) => ({ ...d, [k]: e.target.value }))} />
+              </div>
+            );
+            return (
+              <>
+                <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+                  <F label="Invoice #" k="invoice_number" />
+                  <F label="Invoice Date" k="invoice_date" />
+                  <F label="Due Date" k="due_date" />
+                  <F label="Currency" k="currency" />
+                  <F label="Payment Terms" k="payment_terms" />
+                </div>
+                <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+                  <F label="Vendor Name" k="sender_name" />
+                  <F label="Vendor Email" k="sender_email" />
+                  <F label="Vendor Phone" k="sender_phone" />
+                  <F label="Vendor Address" k="sender_address" />
+                  <F label="Client Name" k="receiver_name" />
+                  <F label="Client Email" k="receiver_email" />
+                </div>
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                  <F label="Subtotal" k="subtotal" />
+                  <F label="Tax Rate (%)" k="tax_rate" />
+                  <F label="Tax Amount" k="tax_amount" />
+                  <F label="Discount" k="discount_total" />
+                  <F label="Shipping" k="shipping" />
+                  <F label="Total Amount" k="total_amount" />
+                  <F label="Amount Due" k="amount_due" />
+                </div>
+                <div>
+                  <label className={lbl}>Notes</label>
+                  <textarea className={inp} rows={2} value={editData['notes'] ?? ''} onChange={e => setEditData((d: any) => ({ ...d, notes: e.target.value }))} />
+                </div>
+              </>
+            );
+          })()}
+          <div className="flex justify-end gap-2 pt-1">
+            <button onClick={() => setEditing(false)} className="px-3 h-8 rounded-lg border border-border text-xs font-medium text-foreground hover:bg-muted transition-all">
+              Cancel
+            </button>
+            <button onClick={handleSaveEdit} disabled={saving}
+              className="px-4 h-8 rounded-lg bg-primary text-primary-foreground text-xs font-medium hover:bg-primary-dark transition-all flex items-center gap-1.5 disabled:opacity-50">
+              {saving ? <Loader2 size={12} className="animate-spin" /> : <Save size={12} />} Save Changes
+            </button>
+          </div>
+        </motion.div>
+      )}
 
       <motion.div variants={container} initial="hidden" animate="show" className="space-y-5">
         {/* Supplier + Invoice Details */}

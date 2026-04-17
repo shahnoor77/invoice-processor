@@ -645,11 +645,44 @@ def delete_invoice(invoice_id: str, user: User = Depends(get_current_user), db: 
     inv = db.query(Invoice).filter(Invoice.id == invoice_id, Invoice.user_id == user.id).first()
     if not inv:
         raise HTTPException(status_code=404, detail="Invoice not found")
-    # Null out the FK reference in processing_jobs before deleting
     db.query(ProcessingJob).filter(ProcessingJob.invoice_id == invoice_id).update({"invoice_id": None})
     db.delete(inv)
     db.commit()
     return {"message": "Invoice deleted"}
+
+
+class InvoicePatchIn(BaseModel):
+    invoice_number: Optional[str] = None
+    invoice_date: Optional[str] = None
+    due_date: Optional[str] = None
+    payment_terms: Optional[str] = None
+    currency: Optional[str] = None
+    sender_name: Optional[str] = None
+    sender_email: Optional[str] = None
+    sender_phone: Optional[str] = None
+    sender_address: Optional[str] = None
+    receiver_name: Optional[str] = None
+    receiver_email: Optional[str] = None
+    subtotal: Optional[float] = None
+    tax_amount: Optional[float] = None
+    tax_rate: Optional[float] = None
+    discount_total: Optional[float] = None
+    shipping: Optional[float] = None
+    total_amount: Optional[float] = None
+    amount_due: Optional[float] = None
+    notes: Optional[str] = None
+
+
+@router.patch("/invoices/{invoice_id}", tags=["Invoices"])
+def update_invoice(invoice_id: str, data: InvoicePatchIn, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """Manually correct invoice fields."""
+    inv = db.query(Invoice).filter(Invoice.id == invoice_id, Invoice.user_id == user.id).first()
+    if not inv:
+        raise HTTPException(status_code=404, detail="Invoice not found")
+    for field, value in data.model_dump(exclude_none=True).items():
+        setattr(inv, field, value)
+    db.commit()
+    return _invoice_to_dict(inv)
 
 
 # ── Manual invoice upload ─────────────────────────────────────────────────────
