@@ -29,7 +29,7 @@ export function AppHeader() {
         {title}
       </motion.h1>
 
-      <div className="flex items-center gap-3">
+      {/* <div className="flex items-center gap-3">
         <button className="relative p-1.5 rounded-md text-muted-foreground hover:bg-muted hover:text-foreground transition-all">
           <Bell size={15} />
           <span className="absolute top-1 right-1 w-1.5 h-1.5 rounded-full bg-primary" />
@@ -43,7 +43,7 @@ export function AppHeader() {
         <div className="w-6 h-6 rounded-full bg-primary/20 flex items-center justify-center">
           <span className="text-primary text-[10px] font-semibold">AU</span>
         </div>
-      </div>
+      </div> */}
     </header>
   );
 }
