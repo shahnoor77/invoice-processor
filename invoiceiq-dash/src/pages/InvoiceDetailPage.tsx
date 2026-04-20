@@ -240,8 +240,9 @@ export default function InvoiceDetailPage() {
             : trimmed;
         }
       }
-      const updated = await apiUpdateInvoice(invoice.id, payload);
-      setInvoice(updated);
+      await apiUpdateInvoice(invoice.id, payload);
+      const refreshed = await apiGetInvoice(invoice.id);
+      setInvoice(refreshed);
       setEditing(false);
       setEditErrors({});
       toast.success('Invoice updated');
