@@ -473,7 +473,7 @@ export default function InvoiceDetailPage() {
                   return (
                     <tr key={li.id} className={`border-t border-border ${liIssue ? 'bg-amber-500/5' : ''}`}>
                       <td className="px-4 py-2.5 text-muted-foreground">{i + 1}</td>
-                      <td className="px-4 py-2.5 text-foreground">{li.description || '—'}</td>
+                      <td className="px-4 py-2.5 text-foreground break-words max-w-[200px]">{li.description || '—'}</td>
                       <td className="px-4 py-2.5 text-right text-foreground">{li.quantity ?? '—'}</td>
                       <td className="px-4 py-2.5 text-right text-foreground">
                         {li.unit_price != null ? `${cur} ${li.unit_price.toFixed(2)}` : '—'}

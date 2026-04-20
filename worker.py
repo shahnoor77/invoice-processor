@@ -361,6 +361,19 @@ class InvoiceExtraction(BaseModel):
         return d
 
 
+def _fix_text_spacing(text: str | None) -> str | None:
+    """Fix merged words in extracted text fields (e.g. 'WebsiteDesign' → 'Website Design')."""
+    if not text:
+        return text
+    import re
+    # CamelCase splits
+    text = re.sub(r'([a-z])([A-Z])', r'\1 \2', text)
+    # Consecutive capitalized words
+    for _ in range(3):
+        text = re.sub(r'([A-Z][a-z]{2,})([A-Z][a-z])', r'\1 \2', text)
+    return re.sub(r' {2,}', ' ', text).strip()
+
+
 def _coerce_extracted(raw: dict) -> dict:
     """
     Run raw LLM output through Pydantic coercion.
@@ -369,6 +382,17 @@ def _coerce_extracted(raw: dict) -> dict:
     try:
         parsed = InvoiceExtraction.model_validate(raw)
         coerced = parsed.to_dict()
+        # Fix merged words in text fields
+        for field in ('notes', 'terms_and_conditions', 'payment_terms', 'payment_method'):
+            if coerced.get(field):
+                coerced[field] = _fix_text_spacing(coerced[field])
+        if coerced.get('sender') and coerced['sender'].get('name'):
+            coerced['sender']['name'] = _fix_text_spacing(coerced['sender']['name'])
+        if coerced.get('receiver') and coerced['receiver'].get('name'):
+            coerced['receiver']['name'] = _fix_text_spacing(coerced['receiver']['name'])
+        for item in (coerced.get('line_items') or []):
+            if item.get('description'):
+                item['description'] = _fix_text_spacing(item['description'])
         log.info(f"[Coerce] Pydantic coercion OK — invoice_number={coerced.get('invoice_number')!r}")
         return coerced
     except Exception as e:

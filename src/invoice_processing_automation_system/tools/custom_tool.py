@@ -20,29 +20,37 @@ TESS_CFG = (
 
 def _fix_ocr_spacing(text: str) -> str:
     """
-    Fix common OCR spacing issues:
-    - Restore spaces between words that got merged (CamelCase-like joins)
-    - Fix spaces around numbers and currency symbols
-    - Handle ligatures and font-specific merges
+    Fix common OCR spacing issues — merged words, missing spaces around numbers.
+    Applied to all OCR output before passing to the LLM.
     """
     import re
-    # Add space before uppercase letter following lowercase (e.g. "InvoiceNumber" → "Invoice Number")
+    # CamelCase: lowercase→uppercase boundary (e.g. "InvoiceNumber" → "Invoice Number")
     text = re.sub(r'([a-z])([A-Z])', r'\1 \2', text)
-    # Add space between letter and digit sequences where missing (e.g. "INV001" stays, "Total100" → "Total 100")
+    # Consecutive capitalized words merged (e.g. "WebsiteTemplateDesign" → "Website Template Design")
+    # Run twice to catch chains of 3+ words
+    for _ in range(3):
+        text = re.sub(r'([A-Z][a-z]{2,})([A-Z][a-z])', r'\1 \2', text)
+    # Letter→digit and digit→letter boundaries (e.g. "Total100" → "Total 100")
     text = re.sub(r'([A-Za-z]{2,})(\d)', r'\1 \2', text)
     text = re.sub(r'(\d)([A-Za-z]{2,})', r'\1 \2', text)
-    # Normalize multiple spaces to single space
+    # Normalize multiple spaces
     text = re.sub(r' {2,}', ' ', text)
-    # Fix lines that have no spaces at all (fully merged line) — skip short tokens
+    # Fix fully-merged lines (no spaces at all, length > 20)
     lines = []
     for line in text.splitlines():
-        if len(line) > 30 and ' ' not in line.strip():
-            # Try to split on common invoice keywords
-            for kw in ['Invoice', 'Date', 'Total', 'Amount', 'Tax', 'Subtotal', 'Due', 'From', 'To', 'Bank']:
-                line = line.replace(kw, f' {kw} ')
-            line = re.sub(r' {2,}', ' ', line).strip()
-        lines.append(line)
+        stripped = line.strip()
+        if len(stripped) > 20 and ' ' not in stripped:
+            for kw in ['Invoice', 'Date', 'Total', 'Amount', 'Tax', 'Subtotal', 'Due',
+                       'From', 'To', 'Bank', 'Payment', 'Purchase', 'Order', 'Number',
+                       'Design', 'Development', 'Service', 'Brand', 'Marketing',
+                       'Application', 'Corporate', 'Business', 'Website']:
+                stripped = stripped.replace(kw, f' {kw} ')
+            stripped = re.sub(r' {2,}', ' ', stripped).strip()
+            lines.append(stripped)
+        else:
+            lines.append(line)
     return '\n'.join(lines)
+
 
 
 def _preprocess_for_ocr(img):

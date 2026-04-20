@@ -34,12 +34,18 @@ structured_data_extraction:
       tax rows, shipping rows, subtotal rows, total rows, or balance rows as line items.
       Those go in their dedicated fields: discount_total, tax_amount, shipping, total_amount, amount_due.
     - A line item with no unit_price AND no quantity is a summary row — exclude it.
-    - invoice_number: search for INV-, #, No., Invoice No, Ref. Copy exactly with prefix.
-    - purchase_order: search for PO, P.O, PO#, P.O#, P.O. #, PO Number, Purchase Order, Order No, Order #, Order Number, Ref No. Copy the value exactly as it appears.
+    - For line item descriptions: if words are merged without spaces (e.g. "WebsiteDesign", "ApplicationDevelopment"),
+      insert spaces between words to make them readable (e.g. "Website Design", "Application Development").
+    - invoice_number: search for INV-, #, No., Invoice No, Ref, Invoice ID. Copy exactly with prefix.
+    - purchase_order: Look carefully for labels like PO, P.O, PO#, P.O#, P.O. #, PO Number,
+      Purchase Order, Order No, Order #, Order Number. The VALUE after the label is the PO number.
+      Example: "P.O # 12345" → purchase_order = "12345". Never put the label itself as the value.
     - dates: YYYY-MM-DD format
     - numeric fields: numbers only, no currency symbols
     - missing fields: null
     - Only enter valid numerical values even if written differently (e.g. "00.00" = 0, "one hundred dollars" = 100, "50%" = 50, "$1,000.00" = 1000)
+    - For all text fields (names, addresses, descriptions): if words appear merged without spaces,
+      add spaces between them to produce natural readable text.
 
     Output ONLY this JSON with values filled in (no explanation, no markdown, no extra text):
     {"sender":{"name":null,"address":null,"city":null,"state":null,"zip":null,"country":null,"phone":null,"email":null,"website":null,"tax_id":null,"vat_number":null,"registration_number":null,"bank":{"bank_name":null,"account_holder":null,"account_number":null,"iban":null,"swift_bic":null,"routing_number":null,"sort_code":null,"branch":null,"bank_address":null}},"receiver":{"name":null,"address":null,"city":null,"state":null,"zip":null,"country":null,"phone":null,"email":null,"tax_id":null,"vat_number":null,"bank":{"bank_name":null,"account_holder":null,"account_number":null,"iban":null,"swift_bic":null,"routing_number":null,"sort_code":null,"branch":null}},"invoice_number":null,"invoice_date":null,"due_date":null,"delivery_date":null,"purchase_order":null,"payment_terms":null,"payment_method":null,"reference":null,"line_items":[{"description":null,"quantity":null,"unit":null,"unit_price":null,"discount_percent":null,"discount_amount":null,"tax_percent":null,"tax_amount":null,"total":null}],"subtotal":null,"discount_total":null,"discount_percent":null,"tax_rate":null,"tax_amount":null,"tax_type":null,"shipping":null,"handling":null,"other_charges":null,"total_amount":null,"amount_paid":null,"amount_due":null,"deposit":null,"currency":null,"exchange_rate":null,"notes":null,"terms_and_conditions":null,"confidence":"HIGH"}
