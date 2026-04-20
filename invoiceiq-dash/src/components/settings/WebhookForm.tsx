@@ -1,35 +1,32 @@
 import { useState, useEffect } from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
-import { useForm, useFieldArray } from 'react-hook-form';
+import { motion } from 'framer-motion';
+import { useForm } from 'react-hook-form';
 import { z } from 'zod';
 import { zodResolver } from '@hookform/resolvers/zod';
-import { Plus, X, Loader2, CheckCircle, Trash2, Edit2 } from 'lucide-react';
+import { Plus, Loader2, CheckCircle, Trash2, Edit2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { apiCreateWebhook, apiGetWebhooks, apiDeleteWebhook, apiTestWebhook, apiUpdateWebhook } from '@/lib/api';
 
 const webhookSchema = z.object({
   name: z.string().min(1, 'Required'),
   url: z.string().url('Must be a valid URL'),
-  method: z.string(),
-  authType: z.string(),
-  bearerToken: z.string().optional(),
-  apiKeyName: z.string().optional(),
-  apiKeyValue: z.string().optional(),
-  basicUser: z.string().optional(),
-  basicPass: z.string().optional(),
-  hmacSecret: z.string().optional(),
-  hmacAlgo: z.string().optional(),
-  contentType: z.string(),
-  retryEnabled: z.boolean(),
-  retryAttempts: z.coerce.number().optional(),
-  retryDelay: z.string().optional(),
-  headers: z.array(z.object({ key: z.string(), value: z.string() })),
-  payload: z.string().optional(),
-  timeout: z.coerce.number(),
-  active: z.boolean(),
 });
 
 type WebhookFormData = z.infer<typeof webhookSchema>;
+
+type SavedWebhook = {
+  id: string;
+  name: string;
+  url: string;
+  is_active: boolean;
+};
+
+type WebhookTestResult = {
+  success: boolean;
+  status_code?: number;
+  response?: string;
+  message?: string;
+};
 
 interface Props {
   onBack: () => void;
@@ -46,38 +43,27 @@ const defaultPayload = `{
 export function WebhookForm({ onBack, onComplete }: Props) {
   const [testing, setTesting] = useState(false);
   const [testResponse, setTestResponse] = useState<string | null>(null);
-  const [savedWebhooks, setSavedWebhooks] = useState<any[]>([]);
+  const [savedWebhooks, setSavedWebhooks] = useState<SavedWebhook[]>([]);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [showForm, setShowForm] = useState(false);
 
+  const getErrorMessage = (error: unknown): string => {
+    if (error instanceof Error && error.message) return error.message;
+    return 'Something went wrong';
+  };
+
   useEffect(() => {
-    apiGetWebhooks().then((hooks: any) => {
-      setSavedWebhooks(Array.isArray(hooks) ? hooks : []);
-      setShowForm(hooks.length === 0);
+    apiGetWebhooks().then((hooks: unknown) => {
+      const normalized = Array.isArray(hooks) ? hooks as SavedWebhook[] : [];
+      setSavedWebhooks(normalized);
+      setShowForm(normalized.length === 0);
     }).catch(() => setShowForm(true));
   }, []);
 
-  const { register, handleSubmit, watch, control, formState: { errors, isValid } } = useForm<WebhookFormData>({
+  const { register, handleSubmit, watch, formState: { errors, isValid } } = useForm<WebhookFormData>({
     resolver: zodResolver(webhookSchema),
     mode: 'onChange',
-    defaultValues: {
-      method: 'POST',
-      authType: 'None',
-      contentType: 'application/json',
-      retryEnabled: false,
-      retryAttempts: 3,
-      retryDelay: '30s',
-      headers: [],
-      payload: defaultPayload,
-      timeout: 30,
-      active: true,
-    },
   });
-
-  const { fields, append, remove } = useFieldArray({ control, name: 'headers' });
-
-  const authType = watch('authType');
-  const retryEnabled = watch('retryEnabled');
 
   const handleTest = async () => {
     setTesting(true);
@@ -85,14 +71,14 @@ export function WebhookForm({ onBack, onComplete }: Props) {
     // Save first then test
     const data = { name: 'test', url: watch('url'), method: 'POST', is_active: true };
     try {
-      const created: any = await apiCreateWebhook(data);
-      const result: any = await apiTestWebhook(created.id);
+      const created = await apiCreateWebhook(data) as { id: string };
+      const result = await apiTestWebhook(created.id) as WebhookTestResult;
       setTestResponse(result.success
         ? `HTTP ${result.status_code} OK\n\n${result.response}`
-        : `Failed: ${result.message}`);
-      toast[result.success ? 'success' : 'error'](result.success ? 'Webhook test successful!' : result.message);
-    } catch (e: any) {
-      setTestResponse(`Error: ${e.message}`);
+        : `Failed: ${result.message ?? 'Webhook test failed'}`);
+      toast[result.success ? 'success' : 'error'](result.success ? 'Webhook test successful!' : (result.message ?? 'Webhook test failed'));
+    } catch (e: unknown) {
+      setTestResponse(`Error: ${getErrorMessage(e)}`);
     }
     setTesting(false);
   };
@@ -102,19 +88,24 @@ export function WebhookForm({ onBack, onComplete }: Props) {
       await apiDeleteWebhook(id);
       setSavedWebhooks(prev => prev.filter(w => w.id !== id));
       toast.success('Webhook deleted');
-    } catch (e: any) {
-      toast.error(e.message);
+    } catch (e: unknown) {
+      toast.error(getErrorMessage(e));
     }
   };
 
   const onSubmit = async (data: WebhookFormData) => {
     try {
       const payload = {
-        name: data.name, url: data.url, method: data.method,
-        auth_type: data.authType, content_type: data.contentType,
-        payload_template: data.payload, retry_enabled: data.retryEnabled,
-        retry_attempts: data.retryAttempts, timeout_seconds: data.timeout,
-        is_active: data.active,
+        name: data.name,
+        url: data.url,
+        method: 'POST',
+        auth_type: 'None',
+        content_type: 'application/json',
+        payload_template: defaultPayload,
+        retry_enabled: false,
+        retry_attempts: 3,
+        timeout_seconds: 30,
+        is_active: true,
       };
       if (editingId) {
         await apiUpdateWebhook(editingId, payload);
@@ -123,12 +114,12 @@ export function WebhookForm({ onBack, onComplete }: Props) {
         await apiCreateWebhook(payload);
         toast.success('Webhook saved');
       }
-      const hooks: any = await apiGetWebhooks();
-      setSavedWebhooks(Array.isArray(hooks) ? hooks : []);
+      const hooks = await apiGetWebhooks();
+      setSavedWebhooks(Array.isArray(hooks) ? hooks as SavedWebhook[] : []);
       setShowForm(false);
       setEditingId(null);
-    } catch (e: any) {
-      toast.error('Failed to save webhook: ' + e.message);
+    } catch (e: unknown) {
+      toast.error('Failed to save webhook: ' + getErrorMessage(e));
     }
   };
 
@@ -198,118 +189,7 @@ export function WebhookForm({ onBack, onComplete }: Props) {
             <input {...register('url')} placeholder="https://your-endpoint.com/webhook" className={inputClass} />
             {errors.url && <p className="text-destructive text-xs mt-1">{errors.url.message}</p>}
           </div>
-          <div>
-            <label className={labelClass}>HTTP Method</label>
-            <select {...register('method')} className={inputClass}>
-              <option>POST</option><option>PUT</option><option>PATCH</option>
-            </select>
-          </div>
-          <div>
-            <label className={labelClass}>Authentication Type</label>
-            <select {...register('authType')} className={inputClass}>
-              <option>None</option><option>Bearer Token</option><option>API Key</option><option>Basic Auth</option><option>HMAC Secret</option>
-            </select>
-          </div>
         </div>
-
-        {/* Conditional auth fields */}
-        <AnimatePresence mode="wait">
-          {authType === 'Bearer Token' && (
-            <motion.div key="bearer" initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }} exit={{ opacity: 0, height: 0 }}>
-              <label className={labelClass}>Bearer Token</label>
-              <input {...register('bearerToken')} type="password" className={inputClass} />
-            </motion.div>
-          )}
-          {authType === 'API Key' && (
-            <motion.div key="apikey" initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }} exit={{ opacity: 0, height: 0 }} className="grid grid-cols-2 gap-4">
-              <div><label className={labelClass}>Key Name</label><input {...register('apiKeyName')} className={inputClass} /></div>
-              <div><label className={labelClass}>Key Value</label><input {...register('apiKeyValue')} type="password" className={inputClass} /></div>
-            </motion.div>
-          )}
-          {authType === 'Basic Auth' && (
-            <motion.div key="basic" initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }} exit={{ opacity: 0, height: 0 }} className="grid grid-cols-2 gap-4">
-              <div><label className={labelClass}>Username</label><input {...register('basicUser')} className={inputClass} /></div>
-              <div><label className={labelClass}>Password</label><input {...register('basicPass')} type="password" className={inputClass} /></div>
-            </motion.div>
-          )}
-          {authType === 'HMAC Secret' && (
-            <motion.div key="hmac" initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }} exit={{ opacity: 0, height: 0 }} className="grid grid-cols-2 gap-4">
-              <div><label className={labelClass}>Secret Key</label><input {...register('hmacSecret')} type="password" className={inputClass} /></div>
-              <div><label className={labelClass}>Algorithm</label>
-                <select {...register('hmacAlgo')} className={inputClass}><option>SHA256</option><option>SHA512</option></select>
-              </div>
-            </motion.div>
-          )}
-        </AnimatePresence>
-
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-          <div>
-            <label className={labelClass}>Content Type</label>
-            <select {...register('contentType')} className={inputClass}>
-              <option>application/json</option><option>application/x-www-form-urlencoded</option><option>multipart/form-data</option>
-            </select>
-          </div>
-          <div>
-            <label className={labelClass}>Timeout (seconds)</label>
-            <input {...register('timeout')} type="number" className={inputClass} />
-          </div>
-        </div>
-
-        {/* Retry */}
-        <div className="space-y-3">
-          <label className="flex items-center gap-2 text-sm text-foreground cursor-pointer">
-            <input {...register('retryEnabled')} type="checkbox" className="accent-primary w-4 h-4" />
-            Retry on Failure
-          </label>
-          {retryEnabled && (
-            <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }} className="grid grid-cols-2 gap-4">
-              <div><label className={labelClass}>Retry Attempts</label><input {...register('retryAttempts')} type="number" className={inputClass} /></div>
-              <div><label className={labelClass}>Retry Delay</label>
-                <select {...register('retryDelay')} className={inputClass}><option>30s</option><option>1min</option><option>5min</option><option>Exponential</option></select>
-              </div>
-            </motion.div>
-          )}
-        </div>
-
-        {/* Custom Headers */}
-        <div>
-          <div className="flex items-center justify-between mb-2">
-            <label className={labelClass}>Custom Headers</label>
-            <button type="button" onClick={() => append({ key: '', value: '' })} className="text-primary text-sm font-medium flex items-center gap-1 hover:text-primary-dark transition-colors">
-              <Plus size={14} /> Add Header
-            </button>
-          </div>
-          <AnimatePresence>
-            {fields.map((field, i) => (
-              <motion.div
-                key={field.id}
-                layout
-                initial={{ opacity: 0, scale: 0.95 }}
-                animate={{ opacity: 1, scale: 1 }}
-                exit={{ opacity: 0, scale: 0.95 }}
-                className="flex gap-2 mb-2"
-              >
-                <input {...register(`headers.${i}.key`)} placeholder="Key" className={inputClass} />
-                <input {...register(`headers.${i}.value`)} placeholder="Value" className={inputClass} />
-                <button type="button" onClick={() => remove(i)} className="px-2 text-muted-foreground hover:text-destructive transition-colors">
-                  <X size={16} />
-                </button>
-              </motion.div>
-            ))}
-          </AnimatePresence>
-        </div>
-
-        {/* Payload */}
-        <div>
-          <label className={labelClass}>Payload Template</label>
-          <textarea {...register('payload')} rows={8} className={`${inputClass} font-mono text-xs`} />
-        </div>
-
-        {/* Active toggle */}
-        <label className="flex items-center gap-2 text-sm text-foreground cursor-pointer">
-          <input {...register('active')} type="checkbox" className="accent-primary w-4 h-4" />
-          Active — Enable this webhook
-        </label>
 
         {/* Test */}
         <div>
