@@ -40,7 +40,7 @@ services:
 
   # ── Watchtower — auto-pulls new images from Docker Hub ──────────────────────
   watchtower:
-    image: containrrr/watchtower
+    image: containrrr/watchtower:1.5.3   # 1.5.x has broader Docker API compatibility
     restart: unless-stopped
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
