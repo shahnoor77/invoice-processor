@@ -26,11 +26,11 @@ export function AppSidebar() {
     <>
       {/* Desktop sidebar */}
       <motion.aside
-        animate={{ width: collapsed ? 56 : 192 }}
+        animate={{ width: collapsed ? 70 : 192 }}
         transition={{ duration: 0.3, ease: 'easeInOut' }}
         className="hidden md:flex flex-col border-r border-border bg-background h-screen sticky top-0 overflow-hidden"
       >
-        <div className="flex items-center gap-2 px-3 h-11 border-b border-border">
+        <div className="relative flex items-center gap-2 px-3 h-11 border-b border-border">
           <div className="w-7 h-7 rounded-md bg-primary flex items-center justify-center flex-shrink-0">
             <span className="text-primary-foreground font-bold text-[10px]">IF</span>
           </div>
@@ -48,7 +48,7 @@ export function AppSidebar() {
           </AnimatePresence>
           <button
             onClick={() => setCollapsed(!collapsed)}
-            className="ml-auto text-muted-foreground hover:text-foreground transition-colors flex-shrink-0"
+            className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors z-10"
           >
             <motion.div animate={{ rotate: collapsed ? 180 : 0 }} transition={{ duration: 0.3 }}>
               <ChevronLeft size={18} />
@@ -77,7 +77,7 @@ export function AppSidebar() {
                   {active && (
                     <motion.div
                       layoutId="sidebar-active"
-                      className="absolute left-0 top-1/2 -translate-y-1/2 w-0.5 h-5 bg-primary rounded-r-full"
+                      className="absolute left-1 top-1 bottom-1 w-0.5 bg-primary rounded-r-full"
                     />
                   )}
                   <item.icon size={16} className="flex-shrink-0" />
