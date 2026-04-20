@@ -239,16 +239,14 @@ class InvoiceProcessingAutomationSystemCrew:
         )
 
     def crew_minimal(self, erp_system: str = "pending_approval", notification_channel: str = "none") -> Crew:
-        """Minimal crew — skips ERP and notification when not configured."""
+        """Minimal crew — only extraction + validation. Intake agent removed (OCR done before crew)."""
         llm = self._llm()
 
         core_agents = [
-            self.document_intake_specialist(),
             self.data_extraction_specialist(),
             self.data_validation_analyst(),
         ]
         core_tasks = [
-            self.invoice_file_detection_and_intake(),
             self.structured_data_extraction(),
             self.invoice_data_validation(),
         ]

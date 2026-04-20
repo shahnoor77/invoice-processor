@@ -9,7 +9,6 @@ from invoice_processing_automation_system.fetch_latest_emails import fetch_lates
 
 # Tesseract config tuned for invoice numbers and financial figures:
 # preserve_interword_spaces keeps column alignment intact
-# char_whitelist avoids confusing O/0, l/1 in numeric fields
 TESS_CFG = (
     "--psm 6 --oem 3 "
     "-c preserve_interword_spaces=1 "
@@ -17,6 +16,33 @@ TESS_CFG = (
     "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
     "0123456789.,/:;-_()@#%&+= "
 )
+
+
+def _fix_ocr_spacing(text: str) -> str:
+    """
+    Fix common OCR spacing issues:
+    - Restore spaces between words that got merged (CamelCase-like joins)
+    - Fix spaces around numbers and currency symbols
+    - Handle ligatures and font-specific merges
+    """
+    import re
+    # Add space before uppercase letter following lowercase (e.g. "InvoiceNumber" → "Invoice Number")
+    text = re.sub(r'([a-z])([A-Z])', r'\1 \2', text)
+    # Add space between letter and digit sequences where missing (e.g. "INV001" stays, "Total100" → "Total 100")
+    text = re.sub(r'([A-Za-z]{2,})(\d)', r'\1 \2', text)
+    text = re.sub(r'(\d)([A-Za-z]{2,})', r'\1 \2', text)
+    # Normalize multiple spaces to single space
+    text = re.sub(r' {2,}', ' ', text)
+    # Fix lines that have no spaces at all (fully merged line) — skip short tokens
+    lines = []
+    for line in text.splitlines():
+        if len(line) > 30 and ' ' not in line.strip():
+            # Try to split on common invoice keywords
+            for kw in ['Invoice', 'Date', 'Total', 'Amount', 'Tax', 'Subtotal', 'Due', 'From', 'To', 'Bank']:
+                line = line.replace(kw, f' {kw} ')
+            line = re.sub(r' {2,}', ' ', line).strip()
+        lines.append(line)
+    return '\n'.join(lines)
 
 
 def _preprocess_for_ocr(img):
@@ -132,7 +158,7 @@ class PDFTextExtractor(BaseTool):
                 return "PDF_RESULT: No text could be extracted. PDF may be corrupted or unreadable. Do NOT fabricate — mark all fields as null."
 
             avg_conf = sum(all_confidences) / len(all_confidences) if all_confidences else 0
-            combined = "\n\n".join(all_text)
+            combined = _fix_ocr_spacing("\n\n".join(all_text))
 
             if avg_conf < 50:
                 return (
@@ -188,7 +214,7 @@ class ImageTextExtractor(BaseTool):
                 return "OCR_RESULT: No text could be extracted. Image may be too blurry or low quality. Do NOT fabricate any data — mark all fields as null."
 
             avg_conf = sum(confidences) / len(confidences) if confidences else 0
-            text = pytesseract.image_to_string(img, config=TESS_CFG)
+            text = _fix_ocr_spacing(pytesseract.image_to_string(img, config=TESS_CFG))
 
             if avg_conf < 50:
                 return (

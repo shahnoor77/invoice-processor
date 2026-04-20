@@ -19,6 +19,7 @@ type EditField =
   | 'invoice_date'
   | 'due_date'
   | 'payment_terms'
+  | 'purchase_order'
   | 'currency'
   | 'sender_name'
   | 'sender_email'
@@ -154,7 +155,8 @@ export default function InvoiceDetailPage() {
     setActionLoading(true);
     try {
       await apiApproveInvoice(invoice.id);
-      setInvoice({ ...invoice, approval_status: 'APPROVED' });
+      const now = new Date().toISOString();
+      setInvoice({ ...invoice, approval_status: 'APPROVED', approved_at: now });
       toast.success(`Invoice ${invoice.invoice_number || invoice.id} approved`);
     } catch (e: unknown) {
       toast.error(getErrorMessage(e));
@@ -169,7 +171,8 @@ export default function InvoiceDetailPage() {
     setActionLoading(true);
     try {
       await apiRejectInvoice(invoice.id, rejectionReason);
-      setInvoice({ ...invoice, approval_status: 'REJECTED', rejected_reason: rejectionReason });
+      const now = new Date().toISOString();
+      setInvoice({ ...invoice, approval_status: 'REJECTED', rejected_reason: rejectionReason, approved_at: now });
       toast.success(`Invoice ${invoice.invoice_number || invoice.id} rejected`);
     } catch (e: unknown) {
       toast.error(getErrorMessage(e));
@@ -186,6 +189,7 @@ export default function InvoiceDetailPage() {
       invoice_date: normalizeDateValue(invoice.invoice_date),
       due_date: normalizeDateValue(invoice.due_date),
       payment_terms: invoice.payment_terms || '',
+      purchase_order: invoice.purchase_order || '',
       currency: invoice.currency || '',
       sender_name: invoice.sender_name || '',
       sender_email: invoice.sender_email || '',
@@ -325,6 +329,7 @@ export default function InvoiceDetailPage() {
               { label: 'Due Date', k: 'due_date', type: 'date' },
               { label: 'Currency', k: 'currency', type: 'text' },
               { label: 'Payment Terms', k: 'payment_terms', type: 'text' },
+              { label: 'PO Number', k: 'purchase_order', type: 'text' },
             ].map(({ label, k, type }) => (
               <div key={k}>
                 <label className="block text-[11px] text-muted-foreground mb-1">{label}</label>
@@ -418,8 +423,8 @@ export default function InvoiceDetailPage() {
                 {(invoice.sender_name || 'UN').split(' ').map(w => w[0]).join('').slice(0, 2).toUpperCase()}
               </div>
               <div className="min-w-0">
-                <p className="text-sm font-medium text-foreground truncate">{invoice.sender_name || '—'}</p>
-                <p className="text-[11px] text-muted-foreground truncate">{invoice.sender_email || '—'}</p>
+                <p className="text-sm font-medium text-foreground break-words">{invoice.sender_name || '—'}</p>
+                <p className="text-[11px] text-muted-foreground break-words">{invoice.sender_email || '—'}</p>
               </div>
             </div>
             <div className="space-y-2">
@@ -660,7 +665,7 @@ function DetailRow({ icon: Icon, label, value }: { icon: React.ElementType; labe
       <Icon size={13} className="text-muted-foreground mt-0.5 flex-shrink-0" />
       <div className="min-w-0">
         <span className="text-[11px] text-muted-foreground">{label}</span>
-        <p className="text-xs text-foreground">{value}</p>
+        <p className="text-xs text-foreground break-words whitespace-pre-wrap">{value}</p>
       </div>
     </div>
   );

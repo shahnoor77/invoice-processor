@@ -3,7 +3,7 @@ import { motion } from 'framer-motion';
 import { useForm } from 'react-hook-form';
 import { z } from 'zod';
 import { zodResolver } from '@hookform/resolvers/zod';
-import { Info, Loader2, CheckCircle, XCircle, Edit2, Mail, RefreshCw, ToggleLeft, ToggleRight } from 'lucide-react';
+import { Info, Loader2, CheckCircle, XCircle, Edit2, Mail, RefreshCw, ToggleLeft, ToggleRight, Eye, EyeOff, Plus } from 'lucide-react';
 import { toast } from 'sonner';
 import { apiGetEmailConfig, apiSaveEmailConfig, apiTestEmailConnection, apiToggleEmailConfig } from '@/lib/api';
 
@@ -39,6 +39,8 @@ export function EmailServerForm({ onNext }: Props) {
   const [savedConfig, setSavedConfig] = useState<any>(null);
   const [editing, setEditing] = useState(false);
   const [toggling, setToggling] = useState(false);
+  const [showPassword, setShowPassword] = useState(false);
+  const [addingNew, setAddingNew] = useState(false);
 
   const { register, handleSubmit, setValue, watch, formState: { errors, isValid } } = useForm<FormData>({
     resolver: zodResolver(schema),
@@ -118,9 +120,10 @@ export function EmailServerForm({ onNext }: Props) {
     setSaving(true);
     try {
       const result: any = await apiSaveEmailConfig({ email: data.email, password: data.password, display_name: data.display_name, folder: data.folder, poll_interval_minutes: data.poll_interval_minutes, mark_as_read: data.mark_as_read });
-      setSavedConfig({ email: data.email, display_name: data.display_name, imap_host: result.imap_host, imap_port: result.imap_port });
+      setSavedConfig({ email: data.email, display_name: data.display_name, imap_host: result.imap_host, imap_port: result.imap_port, is_active: true });
       setEditing(false);
-      toast.success('Email source saved');
+      setAddingNew(false);
+      toast.success(addingNew ? 'New email account added' : 'Email source saved');
       onNext();
     } catch (e: any) { toast.error('Failed to save: ' + e.message); }
     setSaving(false);
@@ -144,9 +147,13 @@ export function EmailServerForm({ onNext }: Props) {
               className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-border text-sm font-medium text-foreground hover:bg-muted transition-all disabled:opacity-50">
               {polling ? <Loader2 size={13} className="animate-spin" /> : <RefreshCw size={13} />} Poll Now
             </button>
-            <button onClick={() => setEditing(true)}
+            <button onClick={() => { setEditing(true); setAddingNew(false); }}
               className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-border text-sm font-medium text-foreground hover:bg-muted transition-all">
               <Edit2 size={13} /> Edit
+            </button>
+            <button onClick={() => { setEditing(true); setAddingNew(true); setValue('display_name', ''); setValue('email', ''); setValue('folder', 'INBOX'); setValue('poll_interval_minutes', 1); }}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-primary/40 text-sm font-medium text-primary hover:bg-primary/10 transition-all">
+              <Plus size={13} /> Add New
             </button>
           </div>
         </div>
@@ -187,10 +194,12 @@ export function EmailServerForm({ onNext }: Props) {
     <div>
       <div className="mb-6 flex items-start justify-between">
         <div>
-          <h2 className="text-xl font-bold text-foreground">Email Source Configuration</h2>
+          <h2 className="text-xl font-bold text-foreground">
+            {addingNew ? 'Add New Email Account' : 'Email Source Configuration'}
+          </h2>
           <p className="text-muted-foreground text-sm mt-1">Connect your inbox to automatically fetch and process invoice emails.</p>
         </div>
-        {savedConfig?.email && <button onClick={() => setEditing(false)} className="text-sm text-muted-foreground hover:text-foreground">Cancel</button>}
+        {savedConfig?.email && <button onClick={() => { setEditing(false); setAddingNew(false); }} className="text-sm text-muted-foreground hover:text-foreground">Cancel</button>}
       </div>
 
       {/* Provider presets */}
@@ -228,7 +237,14 @@ export function EmailServerForm({ onNext }: Props) {
 
         <div>
           <label className={labelClass}>Password / App Password</label>
-          <input {...register('password')} type="password" placeholder="Your password or app-specific password" className={inputClass} />
+          <div className="relative">
+            <input {...register('password')} type={showPassword ? 'text' : 'password'} placeholder="Your password or app-specific password"
+              className={`${inputClass} pr-10`} />
+            <button type="button" onClick={() => setShowPassword(v => !v)}
+              className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors z-10">
+              {showPassword ? <EyeOff size={15} /> : <Eye size={15} />}
+            </button>
+          </div>
           {errors.password && <p className="text-destructive text-xs mt-1">{errors.password.message}</p>}
         </div>
 

@@ -309,6 +309,12 @@ def save_email_config(data: EmailConfigIn, user: User = Depends(get_current_user
     try:
         cfg = db.query(EmailConfig).filter(EmailConfig.user_id == user.id).first()
         if cfg:
+            # Prevent re-adding the same active email — only allow if it's disabled or a different address
+            if cfg.email == data.email and cfg.is_active:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Email {data.email} is already configured and active. Disable it first to reconfigure."
+                )
             if not resolved.get("password"):
                 resolved.pop("password", None)
             for k, v in resolved.items():
@@ -325,6 +331,8 @@ def save_email_config(data: EmailConfigIn, user: User = Depends(get_current_user
             db.add(cfg)
         db.commit()
         return {"message": "Email config saved", "imap_host": cfg.imap_host, "imap_port": cfg.imap_port}
+    except HTTPException:
+        raise
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=500, detail=f"Failed to save email config: {str(e)}")
@@ -656,6 +664,7 @@ class InvoicePatchIn(BaseModel):
     invoice_date: Optional[str] = None
     due_date: Optional[str] = None
     payment_terms: Optional[str] = None
+    purchase_order: Optional[str] = None
     currency: Optional[str] = None
     sender_name: Optional[str] = None
     sender_email: Optional[str] = None

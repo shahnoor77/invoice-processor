@@ -801,26 +801,25 @@ def _run_crew(ocr_text: str, file_path: str, user_id: str = None) -> dict | None
     def is_refusal(d: dict) -> bool:
         return not is_valid_invoice(d) and bool(refusal_keys & set(d.keys()))
 
-    # Task order: [0] intake, [1] extraction, [2] validation
-    # Check task[1] first — json_dict is pre-parsed by CrewAI (works with GPT-4o, Claude etc.)
-    if len(tasks_output) > 1:
-        task1 = tasks_output[1]
+    # Task order: [0] extraction, [1] validation (intake agent removed — OCR done before crew)
+    if len(tasks_output) > 0:
+        task1 = tasks_output[0]
 
         # json_dict: CrewAI auto-parses valid JSON responses into this — most reliable
         if task1.json_dict and isinstance(task1.json_dict, dict) and is_valid_invoice(task1.json_dict):
-            log.info(f"[Crew] ✓ Got invoice JSON from task[1].json_dict — keys: {list(task1.json_dict.keys())[:6]}")
+            log.info(f"[Crew] ✓ Got invoice JSON from task[0].json_dict (extraction) — keys: {list(task1.json_dict.keys())[:6]}")
             return task1.json_dict
 
         # raw: fallback for models that wrap JSON in text or truncate
         raw1 = task1.raw
         parsed = _parse_json(raw1)
         if parsed is None:
-            log.warning(f"[Crew] task[1] _parse_json returned None — raw length={len(raw1)}, preview: {raw1[:200]!r}")
+            log.warning(f"[Crew] task[0] _parse_json returned None — raw length={len(raw1)}, preview: {raw1[:200]!r}")
         if parsed and isinstance(parsed, dict):
             if is_refusal(parsed):
-                log.warning(f"[Crew] task[1] returned a refusal: {list(parsed.keys())} — trying fallback")
+                log.warning(f"[Crew] task[0] returned a refusal: {list(parsed.keys())} — trying fallback")
             elif is_valid_invoice(parsed):
-                log.info(f"[Crew] ✓ Parsed invoice JSON from task[1].raw — keys: {list(parsed.keys())[:6]}")
+                log.info(f"[Crew] ✓ Parsed invoice JSON from task[0].raw (extraction) — keys: {list(parsed.keys())[:6]}")
                 return parsed
 
     # Fallback: scan all task outputs

@@ -14,10 +14,17 @@ const loginSchema = z.object({
   remember: z.boolean().optional(),
 });
 
+const passwordSchema = z.string()
+  .min(8, 'At least 8 characters')
+  .regex(/[A-Z]/, 'At least one uppercase letter')
+  .regex(/[a-z]/, 'At least one lowercase letter')
+  .regex(/[0-9]/, 'At least one number')
+  .regex(/[^A-Za-z0-9]/, 'At least one special character');
+
 const registerSchema = z.object({
   name: z.string().min(2, 'Name must be at least 2 characters'),
   email: z.string().email('Please enter a valid email address'),
-  password: z.string().min(6, 'Password must be at least 6 characters'),
+  password: passwordSchema,
 });
 
 type LoginForm = z.infer<typeof loginSchema>;
@@ -201,7 +208,7 @@ export default function LoginPage() {
                   <input {...register('password')} type={showPassword ? 'text' : 'password'} placeholder="••••••••"
                     className={`w-full rounded-lg border bg-surface-2 px-3 py-2.5 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary transition-all pr-10 ${errors.password ? 'border-destructive' : 'border-border'}`} />
                   <button type="button" onClick={() => setShowPassword(!showPassword)}
-                    className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors">
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors z-10">
                     {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
                   </button>
                 </div>
@@ -240,14 +247,18 @@ export default function LoginPage() {
               <motion.div initial={{ opacity: 0, y: 15 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.2 }}>
                 <label className="block text-sm font-medium text-foreground mb-1.5">Password</label>
                 <div className="relative">
-                  <input {...regForm.register('password')} type={showPassword ? 'text' : 'password'} placeholder="Min 6 characters"
+                  <input {...regForm.register('password')} type={showPassword ? 'text' : 'password'} placeholder="Min 8 chars, upper, lower, number, symbol"
                     className={`w-full rounded-lg border bg-surface-2 px-3 py-2.5 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary transition-all pr-10 ${regForm.formState.errors.password ? 'border-destructive' : 'border-border'}`} />
                   <button type="button" onClick={() => setShowPassword(!showPassword)}
-                    className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors">
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors z-10">
                     {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
                   </button>
                 </div>
                 {regForm.formState.errors.password && <p className="text-destructive text-xs mt-1">{regForm.formState.errors.password.message}</p>}
+                {/* Password strength hints */}
+                {regForm.watch('password') && !regForm.formState.errors.password && (
+                  <p className="text-success text-xs mt-1 flex items-center gap-1"><CheckCircle size={11} /> Strong password</p>
+                )}
               </motion.div>
 
               {loginError && (

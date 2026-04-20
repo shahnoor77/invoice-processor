@@ -35,6 +35,7 @@ structured_data_extraction:
       Those go in their dedicated fields: discount_total, tax_amount, shipping, total_amount, amount_due.
     - A line item with no unit_price AND no quantity is a summary row — exclude it.
     - invoice_number: search for INV-, #, No., Invoice No, Ref. Copy exactly with prefix.
+    - purchase_order: search for PO, P.O, PO#, P.O#, P.O. #, PO Number, Purchase Order, Order No, Order #, Order Number, Ref No. Copy the value exactly as it appears.
     - dates: YYYY-MM-DD format
     - numeric fields: numbers only, no currency symbols
     - missing fields: null
