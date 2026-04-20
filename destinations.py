@@ -224,53 +224,128 @@ def send_slack_notification(payload: dict, webhook_url: str) -> tuple[bool, str]
     sender = payload.get("sender", {})
     receiver = payload.get("receiver", {})
     cur = fin.get("currency", "")
+    line_items = payload.get("line_items") or []
 
     def fmt(v):
-        return str(v) if v else "—"
+        return str(v).strip() if v not in (None, "") else "—"
 
-    def fmt_money(v):
-        if v is None:
+    def fmt_date(v):
+        if not v:
             return "—"
         try:
-            return f"{cur} {float(v):,.2f}"
+            dt = datetime.fromisoformat(str(v).replace("Z", "+00:00"))
+            return dt.strftime("%Y-%m-%d")
         except Exception:
             return str(v)
 
+    def fmt_money(v):
+        if v in (None, ""):
+            return "—"
+        try:
+            prefix = f"{cur} " if cur else ""
+            return f"{prefix}{float(v):,.2f}"
+        except Exception:
+            return str(v)
+
+    approved_by = fmt(payload.get("approved_by"))
+    approved_on = fmt_date(payload.get("timestamp"))
+    inv_number = fmt(inv.get("invoice_number"))
+
     blocks = [
-        {"type": "header", "text": {"type": "plain_text", "text": f"✅ Invoice Approved: {fmt(inv.get('invoice_number'))}"}},
-        {"type": "section", "fields": [
-            {"type": "mrkdwn", "text": f"*From (Vendor):*\n{fmt(sender.get('name'))}"},
-            {"type": "mrkdwn", "text": f"*Bill To (Client):*\n{fmt(receiver.get('name'))}"},
-            {"type": "mrkdwn", "text": f"*Invoice Date:*\n{fmt(inv.get('invoice_date'))}"},
-            {"type": "mrkdwn", "text": f"*Due Date:*\n{fmt(inv.get('due_date'))}"},
-            {"type": "mrkdwn", "text": f"*Subtotal:*\n{fmt_money(fin.get('subtotal'))}"},
-            {"type": "mrkdwn", "text": f"*Tax:*\n{fmt_money(fin.get('tax_amount'))} ({fmt(fin.get('tax_rate'))}%)"},
-        ]},
-        {"type": "section", "fields": [
-            {"type": "mrkdwn", "text": f"*Total Amount:*\n{fmt_money(fin.get('total_amount'))}"},
-            {"type": "mrkdwn", "text": f"*Amount Due:*\n{fmt_money(fin.get('amount_due'))}"},
-            {"type": "mrkdwn", "text": f"*Payment Terms:*\n{fmt(inv.get('payment_terms'))}"},
-            {"type": "mrkdwn", "text": f"*Approved By:*\n{fmt(payload.get('approved_by'))}"},
-        ]},
+        {"type": "header", "text": {"type": "plain_text", "text": f"Invoice Approved: {inv_number}"}},
+        {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": (
+                    f"This invoice was approved by *{approved_by}* on *{approved_on}*.\n"
+                    f"*From:* {fmt(sender.get('name'))}  |  *Bill To:* {fmt(receiver.get('name'))}"
+                ),
+            },
+        },
+        {"type": "divider"},
+        {
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": "*Invoice Key Details*"},
+        },
+        {
+            "type": "section",
+            "fields": [
+                {"type": "mrkdwn", "text": f"*Invoice Number*\n{inv_number}"},
+                {"type": "mrkdwn", "text": f"*Invoice Date*\n{fmt(inv.get('invoice_date'))}"},
+                {"type": "mrkdwn", "text": f"*Due Date*\n{fmt(inv.get('due_date'))}"},
+                {"type": "mrkdwn", "text": f"*Purchase Order*\n{fmt(inv.get('purchase_order'))}"},
+                {"type": "mrkdwn", "text": f"*Reference*\n{fmt(inv.get('reference'))}"},
+                {"type": "mrkdwn", "text": f"*Payment Terms*\n{fmt(inv.get('payment_terms'))}"},
+                {"type": "mrkdwn", "text": f"*Payment Method*\n{fmt(inv.get('payment_method'))}"},
+                {"type": "mrkdwn", "text": f"*Currency*\n{fmt(fin.get('currency'))}"},
+            ],
+        },
+        {"type": "divider"},
+        {
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": "*Financial Summary*"},
+        },
+        {
+            "type": "section",
+            "fields": [
+                {"type": "mrkdwn", "text": f"*Subtotal*\n{fmt_money(fin.get('subtotal'))}"},
+                {"type": "mrkdwn", "text": f"*Discount*\n{fmt_money(fin.get('discount_total'))}"},
+                {"type": "mrkdwn", "text": f"*Tax*\n{fmt_money(fin.get('tax_amount'))} ({fmt(fin.get('tax_rate'))}%)"},
+                {"type": "mrkdwn", "text": f"*Shipping*\n{fmt_money(fin.get('shipping'))}"},
+                {"type": "mrkdwn", "text": f"*Total Amount*\n{fmt_money(fin.get('total_amount'))}"},
+                {"type": "mrkdwn", "text": f"*Amount Paid*\n{fmt_money(fin.get('amount_paid'))}"},
+                {"type": "mrkdwn", "text": f"*Amount Due*\n{fmt_money(fin.get('amount_due'))}"},
+                {"type": "mrkdwn", "text": f"*Status*\n{fmt(payload.get('approval_status'))}"},
+            ],
+        },
     ]
+
+    if line_items:
+        lines = []
+        for idx, item in enumerate(line_items[:5], start=1):
+            desc = fmt(item.get("description"))
+            qty = fmt(item.get("quantity"))
+            total = fmt_money(item.get("total"))
+            lines.append(f"{idx}. {desc} (Qty: {qty}) - {total}")
+
+        if len(line_items) > 5:
+            lines.append(f"...and {len(line_items) - 5} more item(s)")
+
+        blocks.extend([
+            {"type": "divider"},
+            {
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": "*Line Items*\n" + "\n".join(lines),
+                },
+            },
+        ])
 
     # Add bank details if present
     sender_bank = sender.get("bank", {})
     if sender_bank.get("bank_name") or sender_bank.get("iban"):
-        bank_text = f"*Bank:* {fmt(sender_bank.get('bank_name'))}"
+        bank_text = f"*Payment Details*\n*Bank:* {fmt(sender_bank.get('bank_name'))}"
         if sender_bank.get("account_number"):
             bank_text += f"\n*Account:* {sender_bank['account_number']}"
         if sender_bank.get("iban"):
             bank_text += f"\n*IBAN:* {sender_bank['iban']}"
         if sender_bank.get("swift_bic"):
             bank_text += f"\n*SWIFT:* {sender_bank['swift_bic']}"
+        blocks.append({"type": "divider"})
         blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": bank_text}})
 
     if payload.get("notes"):
-        blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": f"*Notes:* {payload['notes']}"}})
+        blocks.append({"type": "divider"})
+        blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": f"*Notes:*\n{payload['notes']}"}})
 
     try:
-        r = requests.post(webhook_url, json={"blocks": blocks, "text": f"Invoice {inv.get('invoice_number')} approved"}, timeout=10)
+        fallback_text = (
+            f"Invoice {inv_number} approved by {approved_by} on {approved_on}. "
+            f"Amount due: {fmt_money(fin.get('amount_due'))}."
+        )
+        r = requests.post(webhook_url, json={"blocks": blocks, "text": fallback_text}, timeout=10)
         r.raise_for_status()
         return True, "Slack notification sent"
     except Exception as e:

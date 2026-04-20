@@ -70,6 +70,7 @@ export const apiCreateWebhook = (data: unknown) => req('POST', '/settings/webhoo
 export const apiUpdateWebhook = (id: string, data: unknown) => req('PUT', `/settings/webhooks/${id}`, data)
 export const apiDeleteWebhook = (id: string) => req('DELETE', `/settings/webhooks/${id}`)
 export const apiTestWebhook = (id: string) => req('POST', `/settings/webhooks/${id}/test`)
+export const apiTestWebhookPayload = (data: unknown) => req('POST', '/settings/webhooks/test', data)
 
 // Model config
 export const apiGetModelConfig = () => req('GET', '/settings/model')

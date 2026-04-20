@@ -5,7 +5,7 @@ import { z } from 'zod';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { Plus, Loader2, CheckCircle, Trash2, Edit2 } from 'lucide-react';
 import { toast } from 'sonner';
-import { apiCreateWebhook, apiGetWebhooks, apiDeleteWebhook, apiTestWebhook, apiUpdateWebhook } from '@/lib/api';
+import { apiCreateWebhook, apiGetWebhooks, apiDeleteWebhook, apiTestWebhook, apiTestWebhookPayload, apiUpdateWebhook } from '@/lib/api';
 
 const webhookSchema = z.object({
   name: z.string().min(1, 'Required'),
@@ -68,11 +68,14 @@ export function WebhookForm({ onBack, onComplete }: Props) {
   const handleTest = async () => {
     setTesting(true);
     setTestResponse(null);
-    // Save first then test
-    const data = { name: 'test', url: watch('url'), method: 'POST', is_active: true };
     try {
-      const created = await apiCreateWebhook(data) as { id: string };
-      const result = await apiTestWebhook(created.id) as WebhookTestResult;
+      const result = editingId
+        ? await apiTestWebhook(editingId) as WebhookTestResult
+        : await apiTestWebhookPayload({
+            url: watch('url'),
+            method: 'POST',
+            timeout_seconds: 30,
+          }) as WebhookTestResult;
       setTestResponse(result.success
         ? `HTTP ${result.status_code} OK\n\n${result.response}`
         : `Failed: ${result.message ?? 'Webhook test failed'}`);

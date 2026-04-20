@@ -401,6 +401,13 @@ class WebhookIn(BaseModel):
     is_active: bool = True
 
 
+class WebhookTestIn(BaseModel):
+    url: str
+    method: str = "POST"
+    custom_headers: Optional[dict] = None
+    timeout_seconds: int = 30
+
+
 @router.get("/settings/webhooks", tags=["Settings"])
 def list_webhooks(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     hooks = db.query(Webhook).filter(Webhook.user_id == user.id).all()
@@ -443,6 +450,25 @@ def test_webhook(webhook_id: str, user: User = Depends(get_current_user), db: Se
     try:
         test_payload = {"test": True, "invoice_number": "TEST-001", "total_amount": 0, "status": "test"}
         r = req.post(hook.url, json=test_payload, timeout=hook.timeout_seconds)
+        return {"success": True, "status_code": r.status_code, "response": r.text[:500]}
+    except Exception as e:
+        return {"success": False, "message": str(e)}
+
+
+@router.post("/settings/webhooks/test", tags=["Settings"])
+def test_webhook_payload(data: WebhookTestIn, user: User = Depends(get_current_user)):
+    """Test a webhook URL without persisting a webhook config."""
+    import requests as req
+
+    try:
+        test_payload = {"test": True, "invoice_number": "TEST-001", "total_amount": 0, "status": "test"}
+        r = req.request(
+            data.method.upper(),
+            data.url,
+            json=test_payload,
+            headers=data.custom_headers or {},
+            timeout=data.timeout_seconds,
+        )
         return {"success": True, "status_code": r.status_code, "response": r.text[:500]}
     except Exception as e:
         return {"success": False, "message": str(e)}
@@ -607,14 +633,31 @@ def approve_invoice(invoice_id: str, user: User = Depends(get_current_user), db:
     erp_webhooks = []
     slack_urls = []
     notification_emails = []
+    seen_slack_urls = set()
+    seen_erp_configs = set()
 
     for w in webhooks:
-        if "hooks.slack.com" in w.url or "slack.com/services" in w.url:
-            slack_urls.append(w.url)
+        normalized_url = (w.url or "").strip()
+        if not normalized_url:
+            continue
+
+        if "hooks.slack.com" in normalized_url or "slack.com/services" in normalized_url:
+            if normalized_url not in seen_slack_urls:
+                seen_slack_urls.add(normalized_url)
+                slack_urls.append(normalized_url)
         else:
+            erp_key = (
+                normalized_url,
+                (w.method or "POST").upper(),
+                w.auth_type or "None",
+            )
+            if erp_key in seen_erp_configs:
+                continue
+            seen_erp_configs.add(erp_key)
+
             # Pass full webhook config so auth/headers/template are applied
             erp_webhooks.append({
-                "url": w.url,
+                "url": normalized_url,
                 "method": w.method or "POST",
                 "auth_type": w.auth_type or "None",
                 "auth_credentials": w.auth_credentials or {},
