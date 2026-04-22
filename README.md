@@ -1,22 +1,39 @@
-# InvoiceIQ — AI-Powered Invoice Processing System
+# InvoiceIQ
 
-An AI-powered invoice processing system that automatically fetches invoices from email, extracts structured data using OCR and LLM agents, validates calculations, stores them in PostgreSQL, and routes approved invoices to ERP systems via webhooks.
+> AI-powered invoice processing — extract, validate, review, and route invoices automatically.
+
+InvoiceIQ connects to your email inbox, extracts structured data from invoice attachments using OCR and LLM agents, validates calculations, and routes approved invoices to your ERP or webhook endpoints. Everything runs in Docker with a single command.
 
 ---
 
-## How It Works
+## Features
+
+- **Automatic email polling** — connects to any IMAP inbox (Gmail, Outlook, Yahoo, custom), fetches invoice attachments, and queues them for processing
+- **Multi-layer OCR** — pdfplumber for text-based PDFs, Tesseract + LLaVA vision model for scanned/image invoices
+- **AI extraction** — structured data extraction via CrewAI agents with automatic calculation validation and correction
+- **Manual review UI** — approve, reject, or edit extracted invoice data before routing
+- **Webhook routing** — send approved invoices to any ERP endpoint with configurable auth, headers, and payload templates
+- **Per-user model config** — each user can override the system LLM with their own API key (Groq, OpenAI, Gemini, or custom Ollama)
+- **Encrypted credentials** — email passwords stored with AES-GCM encryption
+- **CI/CD** — GitHub Actions builds and pushes Docker images; Watchtower auto-deploys on the VM
+
+---
+
+## Architecture
 
 ```
-Email Inbox (IMAP — any provider)
-      ↓ scheduler.py polls per user (UID-based + SINCE date + UNSEEN — no missed emails)
-PostgreSQL DB → processing_jobs (status: queued)
-      ↓ worker.py picks up jobs (parallel OCR + per-user AI lock)
-OCR (Tesseract / pdfplumber / LLaVA vision) → AI Crew (3 core agents)
-      ↓ Extracts: sender, receiver, bank details, line items, financials
-      ↓ Validates & auto-corrects calculations (line totals, subtotal, tax, total, amount due)
-PostgreSQL DB → invoices (status: PENDING)
-      ↓ User reviews in UI → Approve / Reject
-Destinations: ERP Webhooks (parallel routing on approval)
+Email Inbox (IMAP)
+    ↓  scheduler.py — UID-based polling, 48h lookback, Message-ID dedup
+PostgreSQL — processing_jobs (queued)
+    ↓  worker.py — parallel OCR, per-user AI lock, retry logic
+OCR (pdfplumber / Tesseract / LLaVA)
+    ↓
+CrewAI Agents — extraction → validation
+    ↓
+PostgreSQL — invoices (PENDING)
+    ↓  User reviews in React UI
+Approve → Webhooks (ERP, Slack)
+Reject  → Logged with reason
 ```
 
 ---
@@ -25,141 +42,39 @@ Destinations: ERP Webhooks (parallel routing on approval)
 
 | Layer | Technology |
 |---|---|
-| AI Engine | CrewAI — 3 core agents (intake, extraction, validation) |
-| OCR | Tesseract (images) + pdfplumber (PDFs) + LLaVA vision model |
-| LLM | Ollama (self-hosted) or any cloud model via LiteLLM |
-| Backend | FastAPI + PostgreSQL (SQLAlchemy) |
-| Frontend | React + TypeScript + Tailwind + shadcn/ui |
-| Email | IMAP polling — UID-based with 48h lookback for missed emails |
-| Deployment | Docker Hub image `shahnoor77/invoiceiq:latest` |
+| AI Agents | CrewAI with LiteLLM |
+| LLM | Ollama (self-hosted) · Groq · OpenAI · Gemini |
+| OCR | pdfplumber · Tesseract · LLaVA vision |
+| Backend | FastAPI · PostgreSQL · SQLAlchemy |
+| Frontend | React · TypeScript · Tailwind CSS · shadcn/ui |
+| Deployment | Docker · Docker Hub · Watchtower (auto-deploy) |
+| CI/CD | GitHub Actions |
 
 ---
 
-## Project Structure
+## Quick Start — Docker
 
-```
-├── api.py                  # FastAPI REST API — all /api/* endpoints
-├── auth.py                 # JWT authentication helpers
-├── database.py             # SQLAlchemy engine + session factory
-├── models.py               # DB models: users, invoices, webhooks, jobs, email_configs
-├── scheduler.py            # Email poller — UID-based, SINCE-date, UNSEEN safety net
-├── worker.py               # Invoice processor — OCR, AI crew, validation, retry logic
-├── destinations.py         # Routes approved invoices to webhooks in parallel
-├── db_setup.py             # Database management CLI
-├── Dockerfile              # Multi-stage: React build + Python backend (port 80)
-├── docker-compose.yml      # Stack: API + PostgreSQL (pulls from Docker Hub)
-├── .env.example            # Environment variable template
-├── invoiceiq-dash/         # React frontend (TypeScript + Tailwind + shadcn/ui)
-│   └── src/
-│       ├── pages/          # Login, Invoices, InvoiceDetail, Settings
-│       ├── components/     # UI components, settings forms
-│       └── lib/api.ts      # All API calls
-└── src/invoice_processing_automation_system/
-    ├── crew.py             # CrewAI agents, ModelConfig, make_llm
-    ├── config/
-    │   ├── agents.yaml
-    │   └── tasks.yaml      # Extraction prompt with strict line item rules
-    └── tools/
-        └── custom_tool.py  # PDFTextExtractor, ImageTextExtractor, LLaVA
-```
+No build required. Pulls the pre-built image from Docker Hub.
 
----
-
-## Quick Start — Docker (Recommended)
-
-No build required — pulls the pre-built image from Docker Hub.
-
-### 1. Create your `.env`
+**1. Copy and configure environment**
 
 ```bash
 cp .env.example .env
 # Edit .env with your values
 ```
 
-### 2. Start the stack
+**2. Start the stack**
 
 ```bash
 docker compose pull
 docker compose up -d
 ```
 
-- App: `http://localhost` (port 80)
-- API docs: `http://localhost/docs`
+**3. Access the app**
 
-### 3. That's it
+Open `http://localhost:85` and register an account.
 
-Tables are created automatically on first startup. Register an account at `http://localhost`.
-
----
-
-## VM Deployment
-
-Copy only these two files to your VM:
-
-```
-docker-compose.yml
-.env
-```
-
-Then:
-
-```bash
-docker compose pull && docker compose up -d
-```
-
-Open port **80** on your VM firewall. Access at `http://<vm-ip>`.
-
-For Ollama running on the same VM, set:
-```
-OLLAMA_BASE_URL=http://host.docker.internal:11434
-```
-
-For Ollama on a separate VM:
-```
-OLLAMA_BASE_URL=http://<ollama-vm-ip>:11434
-```
-
-Make sure Ollama binds to `0.0.0.0`:
-```bash
-sudo systemctl edit ollama
-# Add: Environment="OLLAMA_HOST=0.0.0.0:11434"
-sudo systemctl restart ollama
-```
-
----
-
-## Local Development Setup
-
-### Requirements
-- Python 3.10–3.13 + [uv](https://docs.astral.sh/uv/)
-- PostgreSQL 14+
-- [Tesseract OCR](https://github.com/UB-Mannheim/tesseract/wiki) (Windows) or `apt install tesseract-ocr` (Linux)
-- Node.js 18+
-
-### Steps
-
-```bash
-# 1. Install Python deps
-uv sync
-
-# 2. Create DB and tables
-uv run python db_setup.py create-db
-uv run python db_setup.py setup
-
-# 3. Configure environment
-cp .env.example .env
-# Edit .env
-
-# 4. Run API (from project root)
-uv run uvicorn api:app --host 0.0.0.0 --port 8000 --reload --reload-exclude ".venv"
-
-# 5. Run frontend (separate terminal)
-cd invoiceiq-dash
-npm install
-npm run dev
-```
-
-Frontend: `http://localhost:8080` — proxies `/api/*` to the backend automatically.
+Tables are created automatically on first startup. No manual DB setup needed.
 
 ---
 
@@ -172,24 +87,110 @@ Frontend: `http://localhost:8080` — proxies `/api/*` to the backend automatica
 | `JWT_SECRET_KEY` | Yes | Long random string for JWT signing |
 | `MODEL` | Yes | LLM to use (see options below) |
 | `OLLAMA_BASE_URL` | Ollama only | Your Ollama server URL |
-| `MODEL_API_KEY` | Cloud models | API key for Groq/OpenAI/Gemini |
+| `MODEL_API_KEY` | Cloud models | API key for Groq / OpenAI / Gemini |
 | `OPENAI_API_KEY` | No | Set to `fake-key` if not using OpenAI |
+| `EMAIL_ENCRYPTION_KEY` | Recommended | Key for encrypting stored email passwords |
+| `EMAIL_ENCRYPTION_SALT` | Recommended | Salt for key derivation |
+
+Generate secure values for encryption keys:
+```bash
+python -c "import secrets; print(secrets.token_hex(32))"  # for KEY
+python -c "import secrets; print(secrets.token_hex(16))"  # for SALT
+```
 
 ---
 
 ## Switching LLM Models
 
-Set `MODEL` (and `MODEL_API_KEY` for cloud models) in `.env`:
+Set `MODEL` in `.env`. Add `MODEL_API_KEY` for cloud providers.
 
 ```bash
-MODEL=ollama/qwen3.5:9b              # self-hosted, best accuracy
-MODEL=ollama/llama3.1:8b             # self-hosted, faster
-MODEL=groq/llama-3.3-70b-versatile   # Groq free tier — very fast
+MODEL=ollama/qwen3.5:9b              # self-hosted, default
+MODEL=groq/llama-3.3-70b-versatile   # Groq free tier — fast
 MODEL=gemini/gemini-2.0-flash        # Google free tier
 MODEL=openai/gpt-4o-mini             # OpenAI
 ```
 
-Users can also override the model per-account in **Settings → AI Model** — stored in the DB, never touches the server environment.
+Users can also set their own model per-account in **Settings → AI Model**. Multiple configs can be saved and switched with one click.
+
+---
+
+## VM Deployment
+
+Copy only two files to the VM:
+
+```
+docker-compose.yml
+.env
+```
+
+Then:
+
+```bash
+docker compose pull && docker compose up -d
+```
+
+Open port **85** on the VM firewall. Access at `http://<vm-ip>:85`.
+
+**Ollama on the same VM:**
+```
+OLLAMA_BASE_URL=http://host.docker.internal:11434
+```
+
+**Ollama on a separate server:**
+```
+OLLAMA_BASE_URL=http://<ollama-server-ip>:11434
+```
+
+Make sure Ollama binds to all interfaces:
+```bash
+sudo systemctl edit ollama
+# Add: Environment="OLLAMA_HOST=0.0.0.0:11434"
+sudo systemctl restart ollama
+```
+
+---
+
+## CI/CD — Auto Deploy
+
+Every push to `main` triggers GitHub Actions to build and push `shahnoor77/invoiceiq:latest` to Docker Hub. Watchtower on the VM polls Docker Hub every 5 minutes and automatically redeploys when a new image is detected.
+
+**GitHub Secrets required:**
+
+| Secret | Value |
+|---|---|
+| `DOCKERHUB_USERNAME` | `docker username` |
+| `DOCKERHUB_TOKEN` | Docker Hub access token (Account Settings → Security) |
+
+Set these at: `github.com/<repo> → Settings → Secrets and variables → Actions`
+
+---
+
+## Local Development
+
+**Requirements:** Python 3.10–3.13, [uv](https://docs.astral.sh/uv/), PostgreSQL 14+, Node.js 18+, [Tesseract OCR](https://github.com/UB-Mannheim/tesseract/wiki)
+
+```bash
+# Install Python dependencies
+uv sync
+
+# Create DB and tables
+uv run python db_setup.py create-db
+uv run python db_setup.py setup
+
+# Configure environment
+cp .env.example .env
+
+# Run API (from project root)
+uv run uvicorn api:app --host 0.0.0.0 --port 8000 --reload --reload-exclude ".venv"
+
+# Run frontend (separate terminal)
+cd invoiceiq-dash
+npm install
+npm run dev
+```
+
+Frontend runs at `http://your-host:8080` and proxies `/api/*` to the backend automatically.
 
 ---
 
@@ -197,97 +198,104 @@ Users can also override the model per-account in **Settings → AI Model** — s
 
 ```bash
 uv run python db_setup.py setup       # First-time: create all tables
-uv run python db_setup.py migrate     # Add missing columns (run after pulling updates)
+uv run python db_setup.py migrate     # Add missing columns after pulling updates
 uv run python db_setup.py status      # Show tables and row counts
 uv run python db_setup.py create-db   # Create the PostgreSQL database
-uv run python db_setup.py reset       # Drop and recreate all tables (deletes data!)
+uv run python db_setup.py reset       # Drop and recreate all tables (deletes data)
 ```
 
 Always run `migrate` after pulling code updates that add new DB columns.
 
 ---
 
-## API Endpoints
+## API Reference
 
-All endpoints are under `/api/` prefix.
+All endpoints are under the `/api/` prefix.
 
 | Method | Endpoint | Description |
 |---|---|---|
-| POST | `/api/auth/register` | Create account |
-| POST | `/api/auth/login` | Login, get JWT |
-| GET | `/api/invoices` | List user's invoices |
-| GET | `/api/invoices/{id}` | Full invoice with line items + financials |
-| POST | `/api/invoices/upload` | Upload invoice file → queued job |
-| GET | `/api/invoices/jobs/{id}` | Poll job status |
-| PATCH | `/api/invoices/{id}/approve` | Approve → routes to webhooks |
-| PATCH | `/api/invoices/{id}/reject` | Reject with reason |
-| GET | `/api/settings/email` | Get email config |
-| PUT | `/api/settings/email` | Save IMAP email config |
-| POST | `/api/settings/email/test` | Test IMAP connection |
-| POST | `/api/settings/email/poll-now` | Trigger immediate email poll |
-| GET | `/api/settings/webhooks` | List webhooks |
-| POST | `/api/settings/webhooks` | Create ERP webhook |
-| PUT | `/api/settings/webhooks/{id}` | Update webhook |
-| DELETE | `/api/settings/webhooks/{id}` | Delete webhook |
-| POST | `/api/settings/webhooks/{id}/test` | Test webhook |
-| GET | `/api/settings/model` | Get per-user model config |
-| PUT | `/api/settings/model` | Set custom model + API key |
-| DELETE | `/api/settings/model` | Reset to system default |
-| GET | `/api/health` | System health check |
+| `POST` | `/api/auth/register` | Create account |
+| `POST` | `/api/auth/login` | Login, receive JWT |
+| `GET` | `/api/invoices` | List invoices |
+| `GET` | `/api/invoices/{id}` | Invoice detail with line items |
+| `POST` | `/api/invoices/upload` | Upload invoice file |
+| `GET` | `/api/invoices/jobs/{id}` | Poll processing job status |
+| `PATCH` | `/api/invoices/{id}/approve` | Approve → routes to webhooks |
+| `PATCH` | `/api/invoices/{id}/reject` | Reject with reason |
+| `PATCH` | `/api/invoices/{id}` | Edit invoice fields |
+| `DELETE` | `/api/invoices/{id}` | Delete invoice |
+| `GET` | `/api/settings/email` | Get email config |
+| `PUT` | `/api/settings/email` | Save IMAP config |
+| `POST` | `/api/settings/email/test` | Test IMAP connection |
+| `POST` | `/api/settings/email/poll-now` | Trigger immediate poll |
+| `PATCH` | `/api/settings/email/toggle` | Enable / disable polling |
+| `GET` | `/api/settings/webhooks` | List webhooks |
+| `POST` | `/api/settings/webhooks` | Create webhook |
+| `PUT` | `/api/settings/webhooks/{id}` | Update webhook |
+| `DELETE` | `/api/settings/webhooks/{id}` | Delete webhook |
+| `POST` | `/api/settings/webhooks/{id}/test` | Test webhook |
+| `GET` | `/api/settings/model` | Get model configs |
+| `PUT` | `/api/settings/model` | Save and activate model config |
+| `PATCH` | `/api/settings/model/{id}/activate` | Activate a saved config |
+| `DELETE` | `/api/settings/model/{id}` | Delete a model config |
+| `DELETE` | `/api/settings/model` | Reset to system default |
+| `GET` | `/api/health` | System health check |
+
+Interactive API docs: `http://your-host:85/docs`
 
 ---
 
 ## Webhook Payload
 
-Sent to all configured webhooks on invoice approval:
+Sent to all active webhooks on invoice approval:
 
 ```json
 {
   "event": "invoice.approved",
-  "timestamp": "2026-04-09T14:30:00Z",
+  "timestamp": "2026-04-17T10:00:00Z",
   "approved_by": "User Name",
-  "invoice": { "invoice_number": "INV-001", "invoice_date": "2026-04-01", "due_date": "2026-04-30" },
-  "sender": {
-    "name": "Vendor Ltd", "address": "...", "tax_id": "...",
-    "bank": { "bank_name": "...", "iban": "...", "swift_bic": "...", "account_number": "..." }
+  "invoice": {
+    "invoice_number": "INV-001",
+    "invoice_date": "2026-04-01",
+    "due_date": "2026-04-30",
+    "purchase_order": "PO-12345"
   },
-  "receiver": { "name": "Client Corp", "address": "..." },
+  "sender": {
+    "name": "Vendor Ltd",
+    "address": "123 Main St",
+    "tax_id": "TAX-001",
+    "bank": {
+      "bank_name": "HBL",
+      "iban": "PK92HABB000000000000",
+      "swift_bic": "HABBPKKA"
+    }
+  },
+  "receiver": { "name": "Client Corp", "address": "456 Business Ave" },
   "line_items": [
     { "description": "Consulting Services", "quantity": 10, "unit_price": 150, "total": 1500 }
   ],
   "financials": {
-    "currency": "USD", "subtotal": 1500, "tax_rate": 10, "tax_amount": 150,
-    "discount_total": 0, "shipping": 0, "total_amount": 1650, "amount_due": 1650
+    "currency": "USD",
+    "subtotal": 1500,
+    "tax_rate": 10,
+    "tax_amount": 150,
+    "discount_total": 0,
+    "total_amount": 1650,
+    "amount_due": 1650
   }
 }
 ```
 
 ---
 
-## Email Polling Strategy
-
-The scheduler uses a layered approach to ensure no invoices are missed:
-
-1. **UID-based** — fetches all emails with UID > last processed UID (catches everything new)
-2. **SINCE date** — looks back 2 hours from last poll (catches emails during server restarts)
-3. **UNSEEN** — always includes unread emails as a safety net
-4. **Message-ID dedup** — never processes the same email twice regardless of read state
-
-On first poll (or after a long gap), looks back **48 hours** to catch missed emails.
-
----
-
 ## Docker Image
 
 ```
-shahnoor77/invoiceiq:latest   # latest stable
-shahnoor77/invoiceiq:v1       # tagged release
+shahnoor77/invoiceiq:latest   # always latest build
 ```
 
-To rebuild and push a new image:
+To manually build and push:
 ```bash
-docker build -t shahnoor77/invoiceiq:latest .
-docker tag shahnoor77/invoiceiq:latest shahnoor77/invoiceiq:v1
-docker push shahnoor77/invoiceiq:latest
-docker push shahnoor77/invoiceiq:v1
+docker build --no-cache -t docker-hub-username/invoiceiq:latest . 
+docker push docker-hub-username/invoiceiq:latest
 ```
